@@ -45,10 +45,13 @@ def clean(self, threshold=0.5):
 
 class ReviewData:
     def __init__(self, filename):
-        try:
-            self.data = pd.read_csv(filename, delimiter=";", encoding='latin-1')
+        try: self.data = pd.read_csv(filename, delimiter=",", encoding='latin-1')
         except:
-            self.data = pd.read_csv(filename, encoding='latin-1')
+            try:
+                self.data = pd.read_csv(filename, delimiter=";", encoding='latin-1')
+            except:
+                self.data = pd.read_csv(filename, encoding='latin-1')
+
 
     def store_text(self, textColumn):
         self.text = self.data[textColumn]
