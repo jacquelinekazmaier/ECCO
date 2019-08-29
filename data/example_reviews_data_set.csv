@@ -1,0 +1,11 @@
+ID,ReviewText,SentimentLabels,Town,Province,Date
+1,I hate this movie,negative,Wynberg,Western Cape,2018-02-19
+3,The plot is thrilling and the cast is great!,positive,Wynberg,Western Cape,2017-11-02
+1,Poor excuse for a film...,negative,Wynberg,Western Cape,2018-02-19
+1,It was okay,neutral,Camps Bay,Western Cape,2017-11-28
+2,So enjoyable to watch!,positive,Camps Bay,Western Cape,2018-02-06
+2,"Great plot, great cast, great movie",positive,Benoni,Gauteng,2017-12-11
+2,Hated every minute of it,negative,Benoni,Gauteng,2018-02-19
+2,I am indifferent,neutral,Pretoria,Gauteng,2017-12-22
+2,Not bad,neutral,Benoni,Gauteng,2018-02-08
+3,"Wow, how thrilling",positive,Pretoria,Gauteng,2017-12-08
