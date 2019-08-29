@@ -11,6 +11,8 @@ The repository is set up as follows:
 - `log`* is the directory in which the results of comparative model evaluations are saved
 - `logs`* is the directory in which TensorBoard files are saved for deep learning models
 - `assets` and `graphics`* are used for the storage of internally generated images and files
+- `dictGB` contains English dictionaries necessary for spelling correction processes
+- `data` houses the data set which maps South African town and province names to geographic coordinates as well as minimal dummy data sets to execute the example below
 
 \* These repositories will be created as needed when running the code
 
