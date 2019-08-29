@@ -9,7 +9,7 @@ The repository is set up as follows:
 - `configurationApp.py` creates modern-looking version of configurations GUI, links functions to the GUI and runs the configurations app
 - `saved_models` is the directory in which models are saved by the system
 - `log` is the directory in which the results of comparative model evaluations are saved
-- `log` is the directory in which TensorBoard files are saved for deep learning models
+- `logs` is the directory in which TensorBoard files are saved for deep learning models
 - `assets` and `graphics` are used for the storage of internally generated images and files
 
 ## Getting started
