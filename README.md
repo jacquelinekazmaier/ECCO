@@ -6,7 +6,7 @@ The repository is set up as follows:
 - `modelling.py` contains functions for building, training and testing sentiment classification models
 - `dashboard.py` contains functions for visualising and analysing model results by means of the Dashboard interface
 - `mainwindow.ui` creates the PyQt GUI 
-- `configurationApp.py` creates modern-looking version of configurations GUI, links functions to GUI and runs the configurations app
+- `configurationApp.py` creates modern-looking version of configurations GUI, links functions to the GUI and runs the configurations app
 - `saved_models` is the directory in which models are saved by the system
 - `log` is the directory in which the results of comparative model evaluations are saved
 - `log` is the directory in which TensorBoard files are saved for deep learning models
