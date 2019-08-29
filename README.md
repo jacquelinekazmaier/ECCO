@@ -7,10 +7,12 @@ The repository is set up as follows:
 - `dashboard.py` contains functions for visualising and analysing model results by means of the Dashboard interface
 - `mainwindow.ui` creates the PyQt GUI 
 - `configurationApp.py` creates modern-looking version of configurations GUI, links functions to the GUI and runs the configurations app
-- `saved_models` is the directory in which models are saved by the system
-- `log` is the directory in which the results of comparative model evaluations are saved
-- `logs` is the directory in which TensorBoard files are saved for deep learning models
-- `assets` and `graphics` are used for the storage of internally generated images and files
+- `saved_models`* is the directory in which models are saved by the system
+- `log`* is the directory in which the results of comparative model evaluations are saved
+- `logs`* is the directory in which TensorBoard files are saved for deep learning models
+- `assets` and `graphics`* are used for the storage of internally generated images and files
+
+* These repositories will be created as needed when running the code
 
 ## Getting started
 This code was built in `Python 3.7`. In order to be able to run the code, first install the required packages documented in `requirements.txt` by running the command
