@@ -12,7 +12,7 @@ The repository is set up as follows:
 - `logs`* is the directory in which TensorBoard files are saved for deep learning models
 - `assets` and `graphics`* are used for the storage of internally generated images and files
 
-* These repositories will be created as needed when running the code
+\*asterisk These repositories will be created as needed when running the code
 
 ## Getting started
 This code was built in `Python 3.7`. In order to be able to run the code, first install the required packages documented in `requirements.txt` by running the command
