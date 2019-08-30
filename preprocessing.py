@@ -5,8 +5,10 @@ import numpy as np
 import nltk
 import sys
 
-if not sys.platform.startswith('win'):
+try:
     import aspell
+except:
+    pass
 
 from imageio import imwrite as imsave
 from wordcloud import WordCloud
@@ -91,7 +93,7 @@ class ReviewData:
                 location_data = pd.read_csv('./data/SouthAfricanCities.csv', encoding="ISO-8859-1")
                 if locations[0] not in selected_cols:
                     selected_cols.extend([locations[0]])
-                    self.qualitative_profiles.extend([locations[0]]) #TODO: why am I doing this again?
+                    self.qualitative_profiles.extend([locations[0]])
                 if locations[1] not in selected_cols:
                     selected_cols.extend([locations[1]])
                     self.qualitative_profiles.extend([locations[1]])
