@@ -6,7 +6,6 @@ import numpy as np
 import warnings
 import tensorflow as tf
 import os, webbrowser, subprocess, threading, sys, multiprocessing
-
 import matplotlib
 matplotlib.use('QT5Agg')
 import matplotlib.pyplot as plt
@@ -18,14 +17,16 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB, GaussianNB, BernoulliNB
-from sklearn.metrics import classification_report, accuracy_score, roc_curve, roc_auc_score, make_scorer, f1_score, \
+from sklearn.metrics import classification_report, accuracy_score, roc_auc_score, make_scorer, f1_score, \
     precision_score, recall_score
 from sklearn.preprocessing import label_binarize
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.ensemble import VotingClassifier, StackingClassifier
 
 import keras
-from keras import optimizers, regularizers
+from keras import regularizers
 from keras.callbacks import TensorBoard
+import keras.backend as K
 
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import confusion_matrix
@@ -33,81 +34,375 @@ from sklearn.metrics import confusion_matrix
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
 
+import joblib
+import gensim.downloader as api
+
+from PyQt5.QtWidgets import QMessageBox
+
+twitter = None
+wiki = None
+
 ################################################
 # lexicon-based methods
 ################################################
-def pattern_sentiment(text):
-    'implement off-the-shelf lexicon-based sentiment model from Pattern library'
-    # rule-based?
-    predicted_sentiment = []
-    predicted_sentiment_numerical = None
-    for i in range(len(text)):
-        # predicted_sentiment_numerical.append(sentiment(text[i])[0])
-        if sentiment(text[i])[0] < 0:
-            predicted_sentiment.append('negative')
-        elif sentiment(text[i])[0] > 0.1:  # as per documentation
-            predicted_sentiment.append('positive')
+class Pattern_sentiment(BaseEstimator, ClassifierMixin):
+    def __init__(self):
+        self.binary = None
+
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        if len(np.unique(y)) == 2:
+            self.binary = True
         else:
-            predicted_sentiment.append('neutral')
-    return pd.DataFrame({'labels': [predicted_sentiment], 'numerical': [predicted_sentiment_numerical]})
+            self.binary = False
+        return self
 
+    def _predict(self, X, binary = None):
+        text = X
+        if self.binary == None:
+            if binary == None:
+                self.binary = False
+            else:
+                self.binary = binary
 
-def sentiwordnet(tokenised_reviews):
-    'implement lexicon-based sentiment model with SentiWordNet (rudimentary approach)'
-    predicted_sentiment = []
-    predicted_sentiment_numerical = None
+        predicted_sentiment = []
+        for i in range(len(text)):
+            if self.binary == False:
+                if sentiment(text[i])[0] < 0:
+                    predicted_sentiment.append(0)
+                elif sentiment(text[i])[0] > 0.1:  # as per documentation
+                    predicted_sentiment.append(2)
+                else:
+                    predicted_sentiment.append(1)
+            else:
+                if sentiment(text[i])[0] > 0.1:  # as per documentation
+                    predicted_sentiment.append(1)
+                else:
+                    predicted_sentiment.append(0)
+        return self.classes_[(np.array(predicted_sentiment).astype(int))]
 
-    for review in tokenised_reviews:
-        score = 0
-        for token in review:
-            wordscore = wordnet.sentiwordnet[token]
-            if wordscore != None:
-                score += wordscore[0]
-
-        # predicted_sentiment_numerical.append(score)
-        if score < 0:
-            predicted_sentiment.append('negative')
-        elif score > 0.1:  # as per Pattern documentation
-            predicted_sentiment.append('positive')
+    def predict(self, X, binary = None):
+        if (str(self.classes_.dtype)[:3] != 'int'):
+            return self._predict(X, binary)
         else:
-            predicted_sentiment.append('neutral')
-    return pd.DataFrame({'labels': [predicted_sentiment], 'numerical': [predicted_sentiment_numerical]})
+            text = X
+            if self.binary == None:
+                if binary == None:
+                    self.binary = False
+                else:
+                    self.binary = binary
 
+            predicted_sentiment = []
+            for i in range(len(text)):
+                if self.binary == False:
+                    if sentiment(text[i])[0] < 0:
+                        predicted_sentiment.append(0)
+                    elif sentiment(text[i])[0] > 0.1:  # as per documentation
+                        predicted_sentiment.append(2)
+                    else:
+                        predicted_sentiment.append(1)
+                else:
+                    if sentiment(text[i])[0] > 0.1:  # as per documentation
+                        predicted_sentiment.append(1)
+                    else:
+                        predicted_sentiment.append(0)
+            return np.array(predicted_sentiment).astype(int)
 
-def hu_liu_sentiment(tokenised_reviews):
-    'implement sentiment analyser using lexicon from Hu and Liu'
-    predicted_sentiment = []
-    predicted_sentiment_numerical = None
-
-    for review in tokenised_reviews:
-        pos_words = sum(token in review for token in opinion_lexicon.positive())
-        neg_words = sum(token in review for token in opinion_lexicon.negative())
-
-        if pos_words > neg_words:
-            predicted_sentiment.append('positive')
-        elif pos_words < neg_words:
-            predicted_sentiment.append('negative')
+    def predict_proba(self, X, binary=None):
+        if self.binary == False:
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                return label_binarize(self._predict(X, binary), self.classes_)
+            else:
+                return label_binarize(self.predict(X, binary), self.classes_)
         else:
-            predicted_sentiment.append('neutral')
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                label = label_binarize(self._predict(X, binary), self.classes_)
+                return np.hstack((1- label, label))
 
-    return pd.DataFrame({'labels': [predicted_sentiment], 'numerical': [predicted_sentiment_numerical]})
+            else:
+                label = label_binarize(self.predict(X, binary), self.classes_)
+                return np.hstack((1- label, label))
 
-def vader(text):
-    analyzer = SentimentIntensityAnalyzer()
-    predicted_sentiment = []
-    predicted_sentiment_numerical = None
-    for i in range(len(text)):
-        sentiment = analyzer.polarity_scores(text[i])
-        if sentiment['compound'] < 0:
-            predicted_sentiment.append('negative')
-        elif sentiment['compound'] > 0:  # as per documentation
-            predicted_sentiment.append('positive')
+
+class Sentiwordnet(BaseEstimator, ClassifierMixin):
+    def __init__(self):
+        self.binary = None
+
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        if len(np.unique(y)) == 2:
+            self.binary = True
         else:
-            predicted_sentiment.append('neutral')
-    return pd.DataFrame({'labels': [predicted_sentiment], 'numerical': [predicted_sentiment_numerical]})
+            self.binary = False
+        return self
+
+    def _predict(self, X, binary = None):
+        tokenised_reviews = [review.split(" ") for review in X]
+
+        if self.binary == None:
+            if binary == None:
+                self.binary = False
+            else:
+                self.binary = binary
+
+        'implement lexicon-based sentiment model with SentiWordNet (rudimentary approach)'
+        predicted_sentiment = []
+
+        for review in tokenised_reviews:
+            score = 0
+            for token in review:
+                wordscore = wordnet.sentiwordnet[token]
+                if wordscore != None:
+                    score += wordscore[0]
+            if self.binary == True:
+                if score > 0.1: # as per Pattern documentation
+                    predicted_sentiment.append(1)
+                else:
+                    predicted_sentiment.append(0)
+            else:
+                if score > 0.1: # as per Pattern documentation
+                    predicted_sentiment.append(2)
+                elif score < 0:
+                    predicted_sentiment.append(0)
+                else:
+                    predicted_sentiment.append(1)
+
+        return self.classes_[(np.array(predicted_sentiment).astype(int))]
+
+    def predict(self, X, binary=None):
+        if (str(self.classes_.dtype)[:3] != 'int'):
+            return self._predict(X, binary)
+        else:
+            tokenised_reviews = [review.split(" ") for review in X]
+
+            if self.binary == None:
+                if binary == None:
+                    self.binary = False
+                else:
+                    self.binary = binary
+
+            'implement lexicon-based sentiment model with SentiWordNet (rudimentary approach)'
+            predicted_sentiment = []
+
+            for review in tokenised_reviews:
+                score = 0
+                for token in review:
+                    wordscore = wordnet.sentiwordnet[token]
+                    if wordscore != None:
+                        score += wordscore[0]
+                if self.binary == True:
+                    if score > 0.1:  # as per Pattern documentation
+                        predicted_sentiment.append(1)
+                    else:
+                        predicted_sentiment.append(0)
+                else:
+                    if score > 0.1:  # as per Pattern documentation
+                        predicted_sentiment.append(2)
+                    elif score < 0:
+                        predicted_sentiment.append(0)
+                    else:
+                        predicted_sentiment.append(1)
+        return np.array(predicted_sentiment).astype(int)
+
+    def predict_proba(self, X, binary=None):
+        if self.binary == False:
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                return label_binarize(self._predict(X, binary), self.classes_)
+            else:
+                return label_binarize(self.predict(X, binary), self.classes_)
+        else:
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                label = label_binarize(self._predict(X, binary), self.classes_)
+                return np.hstack((1 - label, label))
+
+            else:
+                label = label_binarize(self.predict(X, binary), self.classes_)
+                return np.hstack((1 - label, label))
+
+
+class Hu_liu_sentiment(BaseEstimator, ClassifierMixin):
+    def __init__(self):
+        self.binary = None
+
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        if len(np.unique(y)) == 2:
+            self.binary = True
+        else:
+            self.binary = False
+        return self
+
+    def _predict(self, X, binary=None):
+        tokenised_reviews = [review.split(" ") for review in X]
+
+        if self.binary == None:
+            if binary == None:
+                self.binary = False
+            else:
+                self.binary = binary
+
+        'implement sentiment analyser using lexicon from Hu and Liu'
+        predicted_sentiment = []
+
+        for review in tokenised_reviews:
+            pos_words = sum(token in review for token in opinion_lexicon.positive())
+            neg_words = sum(token in review for token in opinion_lexicon.negative())
+
+            if self.binary == True:
+                if pos_words > neg_words:
+                    predicted_sentiment.append(1)
+                else:
+                    predicted_sentiment.append(0)
+            else:
+                if pos_words > neg_words:
+                    predicted_sentiment.append(2)
+                elif pos_words < neg_words:
+                    predicted_sentiment.append(0)
+                else:
+                    predicted_sentiment.append(1)
+
+        return self.classes_[(np.array(predicted_sentiment).astype(int))]
+
+    def predict(self, X, binary=None):
+        if (str(self.classes_.dtype)[:3] != 'int'):
+            return self._predict(X, binary)
+        else:
+            tokenised_reviews = [review.split(" ") for review in X]
+
+            if self.binary == None:
+                if binary == None:
+                    self.binary = False
+                else:
+                    self.binary = binary
+
+            'implement sentiment analyser using lexicon from Hu and Liu'
+            predicted_sentiment = []
+
+            for review in tokenised_reviews:
+                pos_words = sum(token in review for token in opinion_lexicon.positive())
+                neg_words = sum(token in review for token in opinion_lexicon.negative())
+
+                if self.binary == True:
+                    if pos_words > neg_words:
+                        predicted_sentiment.append(1)
+                    else:
+                        predicted_sentiment.append(0)
+                else:
+                    if pos_words > neg_words:
+                        predicted_sentiment.append(2)
+                    elif pos_words < neg_words:
+                        predicted_sentiment.append(0)
+                    else:
+                        predicted_sentiment.append(1)
+
+            return np.array(predicted_sentiment).astype(int)
+
+    def predict_proba(self, X, binary=None):
+        if self.binary == False:
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                return label_binarize(self._predict(X, binary), self.classes_)
+            else:
+                return label_binarize(self.predict(X, binary), self.classes_)
+        else:
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                label = label_binarize(self._predict(X, binary), self.classes_)
+                return np.hstack((1 - label, label))
+
+            else:
+                label = label_binarize(self.predict(X, binary), self.classes_)
+                return np.hstack((1 - label, label))
+
+
+class Vader(BaseEstimator, ClassifierMixin):
+    def __init__(self):
+        self.binary = None
+
+    def fit(self, X, y):
+        self.classes_ = np.unique(y)
+        if len(np.unique(y)) == 2:
+            self.binary = True
+        else:
+            self.binary = False
+        return self
+
+    def _predict(self, X, binary=None):
+        text = X
+        analyzer = SentimentIntensityAnalyzer()
+        predicted_sentiment = []
+
+        if binary != None:
+            self.binary = binary
+
+        if self.binary == True:
+            for i in range(len(text)):
+                sentiment = analyzer.polarity_scores(text[i])
+                if sentiment['compound'] >= 0.05:
+                    predicted_sentiment.append(int(np.where(self.classes_=='positive')[0]))
+                else:
+                    predicted_sentiment.append(int(np.where(self.classes_=='negative')[0]))
+
+        else:
+            for i in range(len(text)):
+                sentiment = analyzer.polarity_scores(text[i])
+                if sentiment['compound'] <= -0.05:
+                    predicted_sentiment.append(int(np.where(self.classes_=='negative')[0]))
+                elif sentiment['compound'] >= 0.05:  # as per documentation???
+                    predicted_sentiment.append(int(np.where(self.classes_=='positive')[0]))
+                else:
+                    predicted_sentiment.append(int(np.where(self.classes_=='neutral')[0]))
+
+        return self.classes_[(np.array(predicted_sentiment).astype(int))]
+
+    def predict(self, X, binary=None):
+        if(str(self.classes_.dtype)[:3] != 'int'):
+            return self._predict(X, binary)
+        else:
+            text = X
+            analyzer = SentimentIntensityAnalyzer()
+            predicted_sentiment = []
+
+            if binary != None:
+                self.binary = binary
+
+            if self.binary == True:
+                for i in range(len(text)):
+                    sentiment = analyzer.polarity_scores(text[i])
+                    if sentiment['compound'] >= 0.05:
+                        predicted_sentiment.append(1)
+                    else:
+                        predicted_sentiment.append(0)
+
+            else:
+                for i in range(len(text)):
+                    sentiment = analyzer.polarity_scores(text[i])
+                    if sentiment['compound'] <= -0.05:
+                        predicted_sentiment.append(0)
+                    elif sentiment['compound'] >= 0.05:  # as per documentation???
+                        predicted_sentiment.append(2)
+                    else:
+                        predicted_sentiment.append(1)
+
+        return np.array(predicted_sentiment).astype(int)
+
+    def predict_proba(self, X, binary=None):
+        if self.binary == False:
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                return label_binarize(self._predict(X, binary), self.classes_)
+            else:
+                return label_binarize(self.predict(X, binary), self.classes_)
+        else:
+            if (str(self.classes_.dtype)[:3] != 'int'):
+                label = label_binarize(self._predict(X, binary), self.classes_)
+                return np.hstack((1 - label, label))
+
+            else:
+                label = label_binarize(self.predict(X, binary), self.classes_)
+                return np.hstack((1 - label, label))
+
+
 
 ################################################
-# Shallow machine learning models
+# Helper functions
 ################################################
 def vectorise(type, max_features, n_grams=(1, 1)):
     if type == 'presence':
@@ -119,9 +414,7 @@ def vectorise(type, max_features, n_grams=(1, 1)):
     elif type == 'tf-idf':
         vectoriser = sklearn.feature_extraction.text.TfidfVectorizer(binary=False, lowercase=False,
                                                                      ngram_range=n_grams, max_features=max_features)
-
     return vectoriser
-
 
 def vec_split(reviews, type, n_grams=(1, 1), testsize=0.2, randomstate=101, sample_type='stratify', max_features=None):
     # create vectoriser
@@ -205,6 +498,9 @@ class LaunchTensorboard(multiprocessing.Process):
             subprocess.call(['tensorboard', '--logdir=logs/LSTM', '--host=127.0.0.1',
                              '--port=8083'])
 
+################################################
+# Machine learning models
+################################################
 def train_NB(type):
     if type == 'presence':
         nb = BernoulliNB()
@@ -261,7 +557,10 @@ class ANN(BaseEstimator, ClassifierMixin):
                 self.model.add(keras.layers.Dropout(rate = self.dropout_prob))
 
         # output layer
-        self.model.add(keras.layers.Dense(len(np.unique(y)), activation='sigmoid'))
+        if len(np.unique(y)) > 2:
+            self.model.add(keras.layers.Dense(len(np.unique(y)), activation='sigmoid'))
+        else:
+            self.model.add(keras.layers.Dense(1, activation='sigmoid'))
         print(self.model.summary())
 
         #fit model
@@ -285,11 +584,24 @@ class ANN(BaseEstimator, ClassifierMixin):
         return self
 
     def predict(self, X):
+
         scores = self.model.predict(X)
-        return self.classes_[np.argmax(scores, axis=1)]
+
+        if len(self.classes_) > 2:
+            preds = self.classes_[np.argmax(scores, axis=1)]
+            return preds
+        else:
+            preds = self.classes_[(scores > 0.5).astype(int)]
+            return np.array([item[0] for item in preds])
 
     def predict_proba(self, X):
-        return self.model.predict(X)
+
+        return_val = self.model.predict(X)
+
+        if len(self.classes_) > 2:
+            return return_val
+        else:
+            return np.hstack((1 - return_val, return_val))
 
 class CNN(BaseEstimator, ClassifierMixin):
     def __init__(self, hidden_layers=[[1,1,1]], embedding_size=10, convolution_type = 'valid', max_feat = 500,
@@ -319,22 +631,71 @@ class CNN(BaseEstimator, ClassifierMixin):
         self.batchnorm = batchnorm
 
     def fit(self, X, y):
+        global twitter, wiki
         #get word embeddings
         self.tokeniser = Tokenizer(num_words = self.max_feat)
         self.tokeniser.fit_on_texts(X)
         X_seq = self.tokeniser.texts_to_sequences(X)
-        #vocab_size = len(self.tokeniser.word_index) +1 #+1 because of reserved 0 index
-        vocab_size = self.max_feat + 1  # +1 because of reserved 0 index
 
         self.maxlen = max(map(len,X)) # set maxlen to max observed length in training data
         X_seq = pad_sequences(X_seq, padding='post', maxlen=self.maxlen)
 
         #create word embeddings
-        self.model.add(
-            keras.layers.Embedding(input_dim=vocab_size,
-                                   output_dim=self.embedding_size,
-                                   input_length = self.maxlen)
-        )
+        if self.embedding_size == 'Twitter':
+            print('Twitter')
+            vocab_size = len(self.tokeniser.word_index) + 1  # +1 because of reserved 0 index
+            if twitter == None:
+                pre_trained = api.load('glove-twitter-25')
+                twitter = pre_trained
+            else:
+                pre_trained = twitter
+            word_index = self.tokeniser.word_index
+            embedding_matrix = np.zeros((vocab_size, 25))
+            for word, i in word_index.items():
+                if word in pre_trained.vocab:
+                    embedding_matrix[i] = pre_trained.word_vec(word)
+            print('Null word embeddings: %d' % np.sum(np.sum(embedding_matrix, axis=1) == 0))
+            print('i.e. %d %' % round(np.sum(np.sum(embedding_matrix, axis=1) == 0)/embedding_matrix.shape[0]*100, 2))
+            embedding_layer = keras.layers.Embedding(embedding_matrix.shape[0],  # or len(word_index) + 1
+                                        embedding_matrix.shape[1],  # or EMBEDDING_DIM,
+                                        weights=[embedding_matrix],
+                                        input_length=self.maxlen,
+                                        trainable=False)
+            self.model.add(
+                embedding_layer
+            )
+        elif self.embedding_size == 'Wiki':
+            print('Wiki')
+            vocab_size = len(self.tokeniser.word_index) + 1  # +1 because of reserved 0 index
+            if wiki == None:
+                pre_trained = api.load('glove-wiki-gigaword-100')
+                wiki = pre_trained
+            else:
+                pre_trained = wiki
+                word_index = self.tokeniser.word_index
+                embedding_matrix = np.zeros((vocab_size, 25))
+            for word, i in word_index.items():
+                if word in pre_trained.vocab:
+                    embedding_matrix[i] = pre_trained.word_vec(word)
+            print('Null word embeddings: %d' % np.sum(np.sum(embedding_matrix, axis=1) == 0))
+            print('i.e. %d %' % round(np.sum(np.sum(embedding_matrix, axis=1) == 0) / embedding_matrix.shape[0] * 100, 2))
+            embedding_layer = keras.layers.Embedding(embedding_matrix.shape[0],  # or len(word_index) + 1
+                                                     embedding_matrix.shape[1],  # or EMBEDDING_DIM,
+                                                     weights=[embedding_matrix],
+                                                     input_length=self.maxlen,
+                                                     trainable=False)
+            self.model.add(
+                embedding_layer
+            )
+
+        else:
+            print('Own embeddings')
+            vocab_size = self.max_feat + 1  # +1 because of reserved 0 index
+            self.model.add(
+                keras.layers.Embedding(input_dim=vocab_size,
+                                       output_dim=self.embedding_size,
+                                       input_length = self.maxlen)
+            )
 
         #check regularisation params
         if self.reg_type == 'L1':
@@ -361,8 +722,11 @@ class CNN(BaseEstimator, ClassifierMixin):
 
         #add output layer
         self.model.add(keras.layers.Flatten())
-        self.model.add(keras.layers.Dense(len(np.unique(y)), activation='sigmoid'))
-
+        # output layer
+        if len(np.unique(y)) > 2:
+            self.model.add(keras.layers.Dense(len(np.unique(y)), activation='sigmoid'))
+        else:
+            self.model.add(keras.layers.Dense(1, activation='sigmoid'))
         print(self.model.summary())
 
         # fit model
@@ -388,20 +752,34 @@ class CNN(BaseEstimator, ClassifierMixin):
     def predict(self, X):
         X_seq = self.tokeniser.texts_to_sequences(X)
         X_seq = pad_sequences(X_seq, padding='post', maxlen=self.maxlen)
+
         scores = self.model.predict(X_seq)
-        return self.classes_[np.argmax(scores, axis=1)]
+
+        if len(self.classes_) > 2:
+            preds = self.classes_[np.argmax(scores, axis=1)]
+            return preds
+        else:
+            preds = self.classes_[(scores > 0.5).astype(int)]
+            return np.array([item[0] for item in preds])
 
     def predict_proba(self, X):
         X_seq = self.tokeniser.texts_to_sequences(X)
         X_seq = pad_sequences(X_seq, padding='post', maxlen=self.maxlen)
-        return self.model.predict(X_seq)
+
+        return_val = self.model.predict(X_seq)
+
+        if len(self.classes_) > 2:
+            return return_val
+        else:
+            return np.hstack((1 - return_val, return_val))
 
 class LSTM(BaseEstimator, ClassifierMixin):
     def __init__(self, hidden_layers=[10], embedding_size=5, max_feat=500,
                  dropout_prob = 0,
                  loss_function='binary_crossentropy',
                  reg_type=None, reg_param=0,
-                 solver='Adam', max_epochs=200, learning_rate=0.2, decay=0, val_split=0.2):
+                 solver='Adam', max_epochs=10, learning_rate=0.2, decay=0, val_split=0.2,
+                 batch_size=125):
 
         self.model = keras.models.Sequential()
         self.hidden_layers = hidden_layers
@@ -416,8 +794,10 @@ class LSTM(BaseEstimator, ClassifierMixin):
         self.learning_rate = learning_rate
         self.decay = decay
         self.val_split = val_split
+        self.batch_size = batch_size
 
     def fit(self, X, y):
+
         #get word embeddings
         self.tokeniser = Tokenizer(num_words = self.max_feat)
         self.tokeniser.fit_on_texts(X)
@@ -451,7 +831,11 @@ class LSTM(BaseEstimator, ClassifierMixin):
 
         # add output layer
         self.model.add(keras.layers.Flatten())
-        self.model.add(keras.layers.Dense(len(np.unique(y)), activation='sigmoid'))
+        # output layer
+        if len(np.unique(y)) > 2:
+            self.model.add(keras.layers.Dense(len(np.unique(y)), activation='sigmoid'))
+        else:
+            self.model.add(keras.layers.Dense(1, activation='sigmoid'))
 
         print(self.model.summary())
 
@@ -471,20 +855,82 @@ class LSTM(BaseEstimator, ClassifierMixin):
         self.model.compile(loss=self.loss_function, optimizer=solver, metrics=['accuracy'])
 
         logdir = os.path.join("logs", "LSTM", datetime.now().strftime("%Y%m%d-%H%M%S"))
-        self.model.fit(X_seq, y, batch_size=32, epochs=self.max_epochs, verbose=2, validation_split=self.val_split,
+        self.model.fit(X_seq, y, batch_size=self.batch_size, epochs=self.max_epochs, verbose=2, validation_split=self.val_split,
                        callbacks=[TrainValTensorBoard(log_dir=logdir, write_graph=False)])
         return self
 
     def predict(self, X):
         X_seq = self.tokeniser.texts_to_sequences(X)
         X_seq = pad_sequences(X_seq, padding='post', maxlen=self.maxlen)
+
+
         scores = self.model.predict(X_seq)
-        return self.classes_[np.argmax(scores, axis=1)]
+
+        if len(self.classes_) > 2:
+            preds = self.classes_[np.argmax(scores, axis=1)]
+            return preds
+        else:
+            preds = self.classes_[(scores > 0.5).astype(int)]
+            return np.array([item[0] for item in preds])
 
     def predict_proba(self, X):
         X_seq = self.tokeniser.texts_to_sequences(X)
         X_seq = pad_sequences(X_seq, padding='post', maxlen=self.maxlen)
-        return self.model.predict(X_seq)
+
+        return_val = self.model.predict(X_seq)
+        if len(self.classes_) > 2:
+            return return_val
+        else:
+            return np.hstack((1 - return_val, return_val))
+
+def generate_ensemble(base_classifiers, configuration, accuracies = None):
+
+    if configuration['combinationMethod'] == 'simple':
+        if configuration['outputType'] == 'discrete':
+            return VotingClassifier(base_classifiers)
+        else:
+            try:
+                return VotingClassifier(base_classifiers, voting='soft')
+            except:
+                msgBox = QMessageBox()
+                msgBox.setText("Probabilities not defined for one of the models. Discrete labels used instead.")
+                msgBox.setWindowTitle("Error")
+                msgBox.exec_()
+                return VotingClassifier(base_classifiers)
+
+    elif configuration['combinationMethod'] == 'weighted':
+        weights = np.array(accuracies)/sum(np.array(accuracies))
+        if configuration['outputType'] == 'discrete':
+            return VotingClassifier(base_classifiers, weights=weights)
+        else:
+            try:
+                return VotingClassifier(base_classifiers, weights=weights, voting='soft')
+            except:
+                msgBox = QMessageBox()
+                msgBox.setText("Probabilities not defined for one of the models. Discrete labels used instead.")
+                msgBox.setWindowTitle("Error")
+                msgBox.exec_()
+                return VotingClassifier(base_classifiers, weights=weights)
+
+    elif configuration['combinationMethod'] == 'meta':
+        if configuration['outputType'] == 'discrete':
+            return StackingClassifier(base_classifiers,
+                                      cv = 5,
+                                      stack_method='predict')
+        else: #soft labels
+            try:
+                return StackingClassifier(base_classifiers,
+                                          cv = 5,
+                                          stack_method='auto')
+            except:
+                msgBox = QMessageBox()
+                msgBox.setText("Probabilities not defined for one of the models. Discrete labels used instead.")
+                msgBox.setWindowTitle("Error")
+                msgBox.exec_()
+                return StackingClassifier(base_classifiers,
+                                          cv=5,
+                                          stack_method='predict')
+
 
 ################################################
 # Model evaluation and selection
@@ -528,7 +974,6 @@ def plot_confusion_matrix(y_true, y_pred, classes, name, normalize=False,
     cb.ax.yaxis.set_tick_params(color='white')
     cb.outline.set_edgecolor('white')
     plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color='white')
-
 
     # Rotate the tick labels and set their alignment.
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
@@ -604,16 +1049,22 @@ def evaluate(true_labels, predicted_labels, path=None, return_type=None):
     if path is not None:
         plot_confusion_matrix(true_labels, labelpred, classes, path)
 
-    if np.any(numpred == None):  # TODO check logic here
+    if np.any(numpred == None):
         # discrete classifier -> binarise output
         numpred = label_binarize(labelpred, classes=classes)  # same as predict_proba for discrete
-    macro_auc, micro_auc = multi_roc(true_labels, numpred)
+
+    try:
+        macro_auc, micro_auc = multi_roc(true_labels, numpred)
+    except:
+        macro_auc = roc_auc_score(true_labels, numpred)
+        micro_auc = roc_auc_score(true_labels, numpred)
+        print('Macro AUC: ', macro_auc)
+        print('Micro AUC: ', micro_auc)
 
     if return_type == 'AUC':
         return micro_auc
     if return_type == 'all':
-        return round(micro_auc, 3), accuracy, precision, recall, round(f1, 3)
-
+        return float(round(micro_auc, 3)), float(round(accuracy,3)), float(round(precision,3)), float(round(recall,3)), float(round(f1, 3))
 
 def get_multi_roc(estimator, X, y):
     """Function for purpose of evaluating alternatives using AUC in grid search"""
@@ -622,11 +1073,8 @@ def get_multi_roc(estimator, X, y):
     except:
         predictions = pd.DataFrame({'labels': [estimator.predict(X)], 'numerical': None})
     auc = evaluate(y, predictions, return_type='AUC')
-    # y_num = label_binarize(y, classes=['negative', 'neutral', 'positive'])  # same as predict_proba for discrete
-    # predictions = pd.DataFrame({'labels': [y], 'numerical': [y_num]})
     print('auc:', auc)
     return auc
-
 
 def grid_search(model, X_train, y_train, parameters, metric, nfolds=3):
     if metric == 'Accuracy':
@@ -640,9 +1088,15 @@ def grid_search(model, X_train, y_train, parameters, metric, nfolds=3):
     else: # metric == 'AUC':
         scorer_fct = get_multi_roc  # also micro average
 
-    gridsearch = GridSearchCV(model, cv=nfolds, param_grid=parameters,
-                              return_train_score=False, n_jobs=8, verbose=2, scoring=scorer_fct)
-    gridsearch.fit(X_train, y_train)
+    gridsearch = RandomizedSearchCV(model, n_iter=10, param_distributions=parameters, cv=nfolds,
+                                                     return_train_score=False, n_jobs=8, verbose=2, scoring=scorer_fct,
+                                    pre_dispatch = 16)
+    K.clear_session()
+    try:
+        gridsearch.fit(X_train, y_train)
+    except:
+        with joblib.parallel_backend('threading'):
+            gridsearch.fit(X_train, y_train)
     print('best params:\n')
     print(gridsearch.best_params_)
     print('best score: ', gridsearch.best_score_)

@@ -29,6 +29,7 @@ from gensim.models.ldamulticore import LdaMulticore
 from pyLDAvis import gensim as gensimvis
 
 import warnings
+
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 ##################################################
@@ -38,26 +39,35 @@ external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 colours = dict(background='#DBDFDC', text='#707070', sentiments=['#82DFAA', '#DE3B3B', '#F9E79F'],
                sentiment_dict={'positive': '#82DFAA', 'negative': '#DE3B3B', 'neutral': '#F9E79F'})
 
-
 class Dashboard:
     def __init__(self, final_predictions, reviews, customer_data=None):
         self.final_predictions = final_predictions
         self.clients = customer_data
         self.reviews = reviews
-        self.unified = pd.merge(self.final_predictions, self.clients.df, on='Client_num', how='inner')
-        # note: above line removes entries without corresponding entries in supplementary data (clients)
+        if customer_data == None:
+            self.unified = self.final_predictions
+
+            self.qualitative_profiles = reviews.qualitative_profiles
+            self.quantitative_profiles = reviews.quantitative_profiles
+
+        else:
+            self.unified = pd.merge(self.final_predictions, self.clients.df, on='Client_num', how='inner',
+                                    suffixes = ("_reviews", "_supp"))
+            # note: above line removes entries without corresponding entries in supplementary data (clients)
+
+            self.qualitative_profiles = self.clients.qualitative_profiles
+            self.qualitative_profiles.extend(reviews.qualitative_profiles)
+            self.quantitative_profiles = self.clients.quantitative_profiles
+            self.quantitative_profiles.extend(reviews.quantitative_profiles)
+
         self.unified.to_csv('./data/unified.csv')
-
-        self.qualitative_profiles = self.clients.qualitative_profiles
-        self.qualitative_profiles.extend(reviews.qualitative_profiles)
-        self.quantitative_profiles = self.clients.quantitative_profiles
-        self.quantitative_profiles.extend(reviews.quantitative_profiles)
-
         self.date = reviews.date
         self.locations = reviews.locations
 
         if reviews.loc != None:
             self.locations.extend([reviews.loc])
+
+        self.unified.rename(columns={self.locations[0]:'Latitude', self.locations[1]:'Longitude'}, inplace=True)
 
         # remove unselected columns
         drop_list = set(self.unified.iloc[:, 3:].columns) - set(self.qualitative_profiles) - set(
@@ -105,9 +115,6 @@ class Dashboard:
                                                            hoverinfo='label+value', textinfo='percent',
                                                            marker=dict(colors=colours['sentiments']), opacity=0.8)],
                                               layout=go.Layout(title='Overall sentiment',
-                                                                #plot_bgcolor = colours['background'],
-                                                                #paper_bgcolor = colours['background'],
-                                                               # font = 'color': colours['text']
                                                                )
                                               )
                              )
@@ -153,9 +160,6 @@ class Dashboard:
         parcat = dcc.Graph(id='parcat',
                            figure=go.Figure(data=data,
                                             layout=go.Layout(title='Customer profiles'
-                                                             # plot_bgcolor = colours['background'],
-                                                             # paper_bgcolor = colours['background'],
-                                                             # font = 'color': colours['text']
                                                              )
                                             )
                            )
@@ -222,7 +226,6 @@ class Dashboard:
         timeseries = html.Div([
             html.H5('Number of reviews per day', style={
                 'textAlign': 'center',
-                # 'color': colours['text']
             }),
             html.Div([dcc.RadioItems(
                 id='radioTimeseries',
@@ -240,7 +243,6 @@ class Dashboard:
         tree = html.Div([html.H5('Classification tree analysis',
                                  style={
                                      'textAlign': 'center',
-                                     # 'color': colours['text'],
                                      'marginBottom': 25, 'marginTop': 25}
                                  ),
 
@@ -330,8 +332,8 @@ class Dashboard:
                          html.Div([
                              html.P("For categorical features interpret 'X_Y < 0.5 is False' "
                                     "to mean feature X = Y")],
-                                  style={'text-align': 'center', 'marginTop': 25,
-                                                                'marginBottom': 25}),
+                             style={'text-align': 'center', 'marginTop': 25,
+                                    'marginBottom': 25}),
                          html.Div(html.Img(id='tree_img', style={'maxWidth': '1300px'}),
                                   style={'text-align': 'center', 'display': 'inline-block',
                                          'width': '600px'})
@@ -339,85 +341,131 @@ class Dashboard:
         return tree
 
     def make_geomap(self):
-        df = self.unified.copy()
-        sentiments = ['negative', 'neutral', 'positive']
 
-        df = df.assign(q=np.ones(df.shape[0]))
-        pv = pd.pivot_table(
-            df,
-            columns=["Sentiment"],
-            index=['Latitude', 'Longitude'],
-            values=['q'],
-            aggfunc='sum',
-            fill_value=0)
+        try:  # if data available
+            df = self.unified.copy()
 
-        names = df.groupby(['Latitude', 'Longitude']).first()[self.locations[2]]
+            df = df.assign(q=np.ones(df.shape[0]))
+            pv = pd.pivot_table(
+                df,
+                columns=["Sentiment"],
+                index=['Latitude', 'Longitude'],
+                values=['q'],
+                aggfunc='sum',
+                fill_value=0)
 
-        totals = np.asarray(pv[('q', 'positive')].values, dtype='int64') + np.asarray(pv[('q', 'negative')].values,
-                                                                                      dtype='int64') + np.asarray(
-            pv[('q', 'neutral')].values, dtype='int64')
-        max = np.max(totals)
-        self.multiplier = 90 / max
+            names = df.groupby(['Latitude', 'Longitude']).first()[self.locations[2]]
 
-        cases = []
-        for i in sentiments:
+            totals = np.asarray(pv[('q', 'positive')].values, dtype='int64') + np.asarray(pv[('q', 'negative')].values,
+                                                                                          dtype='int64') + np.asarray(
+                pv[('q', 'neutral')].values, dtype='int64')
+
+            order = [sum(np.asarray(pv[('q', 'positive')].values, dtype='int64')),
+                     sum(np.asarray(pv[('q', 'negative')].values, dtype='int64')),
+                     sum(np.asarray(pv[('q', 'neutral')].values, dtype='int64'))]
+            if np.argmax(order) == 0:
+                if order[1] > order[2]:
+                    sentiments = ['neutral', 'negative', 'positive']
+                else:
+                    sentiments = ['negative', 'neutral', 'positive']
+            elif np.argmax(order) == 1:
+                if order[0] > order[2]:
+                    sentiments = ['neutral', 'positive', 'negative']
+                else:
+                    sentiments = ['positive', 'neutral', 'negative']
+            else:
+                if order[1] > order[0]:
+                    sentiments = ['positive', 'negative', 'neutral']
+                else:
+                    sentiments = ['negative', 'positive', 'neutral']
+
+            cases = []
+            for i in sentiments:
+                cases.append(go.Scattermapbox(
+                    lon=pv[('q', i)].index.get_level_values(1),
+                    lat=pv[('q', i)].index.get_level_values(0),
+                    text=pv[('q', i)].values,
+                    hoverinfo='text',
+                    hovertext=pv[('q', i)].values,
+                    name=i,
+                    marker=go.scattermapbox.Marker(
+                        size=pv[('q', i)].values * self.multiplier,
+                        color=colours['sentiment_dict'][i],
+                        opacity=0.8,
+                    )
+                ))
+
             cases.append(go.Scattermapbox(
                 lon=pv[('q', i)].index.get_level_values(1),
                 lat=pv[('q', i)].index.get_level_values(0),
-                text=pv[('q', i)].values,
+                text=names.astype(str) + " " + totals.astype(str),
+                name='Location names',
+                visible='legendonly',
                 hoverinfo='text',
-                hovertext=pv[('q', i)].values,  # pv[('q', i)].values.astype(str),
-                name=i,
+                mode="markers+text",
+                textposition='bottom center',
                 marker=go.scattermapbox.Marker(
-                    size=pv[('q', i)].values * self.multiplier,
-                    color=colours['sentiment_dict'][i],
-                    opacity=0.8,
+                    size=0.1,
+                    color="#000000",
                 )
             ))
 
-        cases.append(go.Scattermapbox(
-            lon=pv[('q', i)].index.get_level_values(1),
-            lat=pv[('q', i)].index.get_level_values(0),
-            text=names.astype(str) + " " + totals.astype(str),
-            name='Location names',
-            visible='legendonly',
-            hoverinfo='text',
-            mode="markers+text",
-            textposition='bottom center',
-            marker=go.scattermapbox.Marker(
-                size=0.1,
-                color="#000000",
-            )
-        ))
-
-        layout = go.Layout(
-            width=1400,
-            height=800,
-            hovermode="closest",
-            title=go.layout.Title(
-                text='Sentiment counts by geographical location'),
-            mapbox=go.layout.Mapbox(
-                accesstoken='pk.eyJ1IjoiamFjcXVlbGluZWthem1haWVyIiwiYSI6ImNqd2JyNm1uODBsdTM0M3M2YnF3Z3U0cDkifQ.HkemCJfHUH7nNHOmb21q0g',
-                bearing=0,
-                center=go.layout.mapbox.Center(
-                    lat=-30,
-                    lon=20
+            layout = go.Layout(
+                width=1400,
+                height=800,
+                hovermode="closest",
+                title=go.layout.Title(
+                    text='Sentiment counts by geographical location'),
+                mapbox=go.layout.Mapbox(
+                    accesstoken='pk.eyJ1IjoiamFjcXVlbGluZWthem1haWVyIiwiYSI6ImNqd2JyNm1uODBsdTM0M3M2YnF3Z3U0cDkifQ.HkemCJfHUH7nNHOmb21q0g',
+                    bearing=0,
+                    center=go.layout.mapbox.Center(
+                        lat=-30,
+                        lon=20
+                    ),
+                    pitch=0,
+                    zoom=4,
+                    style='light'
                 ),
-                pitch=0,
-                zoom=4,
-                style='light'
-            ),
-            legend=go.layout.Legend(
-                traceorder='reversed', x=0,y=1
+                legend=go.layout.Legend(
+                    traceorder='reversed', x=0, y=1
+                )
             )
-        )
 
-        fig= {'layout': layout, 'data': cases}
+            fig = {'layout': layout, 'data': cases}
 
-        map = html.Div([dcc.Graph(id='geomap',config={'scrollZoom': True}, figure=fig)],
-                       style={'textAlign':'center'},
-                       )
+            map = html.Div([dcc.Graph(id='geomap', config={'scrollZoom': True}, figure=fig)],
+                           style={'textAlign': 'center'},
+                           )
 
+        except:
+            layout = go.Layout(
+                width=1400,
+                height=800,
+                hovermode="closest",
+                title=go.layout.Title(
+                    text='Sentiment counts by geographical location'),
+                mapbox=go.layout.Mapbox(
+                    accesstoken='pk.eyJ1IjoiamFjcXVlbGluZWthem1haWVyIiwiYSI6ImNqd2JyNm1uODBsdTM0M3M2YnF3Z3U0cDkifQ.HkemCJfHUH7nNHOmb21q0g',
+                    bearing=0,
+                    center=go.layout.mapbox.Center(
+                        lat=-30,
+                        lon=20
+                    ),
+                    pitch=0,
+                    zoom=4,
+                    style='light'
+                ),
+                legend=go.layout.Legend(
+                    traceorder='reversed', x=0, y=1
+                )
+            )
+
+            fig = {'layout': layout, 'data': []}
+
+            map = html.Div([dcc.Graph(id='geomap', config={'scrollZoom': True}, figure=fig)],
+                           style={'textAlign': 'center'},
+                           )
         return map
 
     def make_topic_analysis(self):
@@ -431,12 +479,12 @@ class Dashboard:
         for message in df['Review'].str.lower():
             tokenized = [i for i in nltk.word_tokenize(message) if i not in nltk.corpus.stopwords.words('english')]
             local_nouns = [word for (word, pos) in nltk.pos_tag(tokenized) if is_noun(pos)]
-            if len(local_nouns)>0:
+            if len(local_nouns) > 0:
                 nouns.extend(local_nouns)
 
         c = collections.Counter(nouns)
         keys = [key for key, val in c.most_common(30)]
-        options= []
+        options = []
         options.extend([{
             'label': i,
             'value': i
@@ -444,53 +492,53 @@ class Dashboard:
 
         # Keyword displays
         display = html.Div([
-                html.Div([html.H5('Sentiment counts by keywords', style={
+            html.Div([html.H5('Sentiment counts by keywords', style={
                 'textAlign': 'center', 'marginTop': 20, 'marginBottom': 20,
                 # 'color': colours['text']
-                })], style={'marginTop': 5, 'marginBottom': 5}),
-                html.Div([
-                    html.Div([dcc.RadioItems(
-                        id='radioTopics',
-                        options=[
-                            {'label': '  Raw counts', 'value': 'raw'},
-                            {'label': '  Normalised counts', 'value': 'normalised'}
-                        ],
-                        value='raw'
-                    )],className='six columns'),
-                    html.Div([dcc.Dropdown(id='topic_graph_Ddl', multi=True, placeholder="Select keywords to compare")],
-                             style = {'textAlign':'center','maxWidth':600}, className='six columns')
-                ], className='row'),
-                dcc.Graph(id='topic_graph'),
+            })], style={'marginTop': 5, 'marginBottom': 5}),
+            html.Div([
+                html.Div([dcc.RadioItems(
+                    id='radioTopics',
+                    options=[
+                        {'label': '  Raw counts', 'value': 'raw'},
+                        {'label': '  Normalised counts', 'value': 'normalised'}
+                    ],
+                    value='raw'
+                )], className='six columns'),
+                html.Div([dcc.Dropdown(id='topic_graph_Ddl', multi=True, placeholder="Select keywords to compare")],
+                         style={'textAlign': 'center', 'maxWidth': 600}, className='six columns')
+            ], className='row'),
+            dcc.Graph(id='topic_graph'),
         ])
 
         # Topic modelling
         layout = html.Div([
             html.Div(id='placeholder', style={'display': 'none'}),
-            html.Div([html.H5('Noun phrase detection')], style = {'textAlign':'center', 'padding':10}),
+            html.Div([html.H5('Noun phrase detection')], style={'textAlign': 'center', 'padding': 10}),
             html.Div([
                 html.Div([
-                    html.P('Select automatically detected noun phrases for filter: ')], style={'textAlign':'right'},
-                className='six columns'),
+                    html.P('Select automatically detected noun phrases for filter: ')], style={'textAlign': 'right'},
+                    className='six columns'),
                 html.Div([
                     dcc.Dropdown(
-                        options = options,
-                        multi=True, id = 'keywords'
-                        )
-                ], className='six columns', style={'padding':5})
-            ], className='row', style = {'textAlign':'center', 'padding':5}),
+                        options=options,
+                        multi=True, id='keywords'
+                    )
+                ], className='six columns', style={'padding': 5})
+            ], className='row', style={'textAlign': 'center', 'padding': 5}),
             html.Div([
                 html.Div([
-                    html.P('Add keywords to list: ')], style = {'textAlign': 'right'}
-            , className = 'six columns'),
-            html.Div([
-                dcc.Input(
-                    placeholder='Enter a keyword...',
-                    type='text',
-                    value='', id='manual_keywords_input'
-                ),
-                html.Button('Add', id='manual_keywords_button')
-            ], className='six columns')
-            ], className = 'row'),
+                    html.P('Add keywords to list: ')], style={'textAlign': 'right'}
+                    , className='six columns'),
+                html.Div([
+                    dcc.Input(
+                        placeholder='Enter a keyword...',
+                        type='text',
+                        value='', id='manual_keywords_input'
+                    ),
+                    html.Button('Add', id='manual_keywords_button')
+                ], className='six columns')
+            ], className='row'),
             html.Div([
                 html.Div([html.H5('LDA Topic modelling')], style={'textAlign': 'center'}),
                 html.Div([
@@ -504,8 +552,8 @@ class Dashboard:
                             value=None, id='num_topics'
                         )
                     ], className='six columns')
-                ], className='row', style={'marginTop':5,'marginBottom':5}),\
-
+                ], className='row', style={'marginTop': 5, 'marginBottom': 5}), \
+ \
                 html.Div([
                     html.Div([
                         html.P('Number of iterations: ')], style={'textAlign': 'right'}
@@ -517,11 +565,11 @@ class Dashboard:
                             value='', id='num_passes'
                         )
                     ], className='six columns')
-                ], className='row', style={'marginTop':5, 'marginBottom':5}),
+                ], className='row', style={'marginTop': 5, 'marginBottom': 5}),
 
                 html.Div([html.Button('Execute and view topic model',
-                                      id='lda_button')], style={'padding':10, 'textAlign':'center'})
-            ], style={'marginTop':20}),
+                                      id='lda_button')], style={'padding': 10, 'textAlign': 'center'})
+            ], style={'marginTop': 20}),
             display
         ])
         return layout
@@ -540,13 +588,13 @@ class Dashboard:
         ##############################
         dash_app.layout = html.Div(children=[
             html.Div([html.H1('Analyse results',
-                    style={
-                        'textAlign': 'center',
-                    })], style={'marginTop': 10}),
+                              style={
+                                  'textAlign': 'center',
+                              })], style={'marginTop': 10}),
             html.Div([
                 html.P('Filter results by keywords. Customise list in Topic Analysis tab.'),
                 dcc.Dropdown(
-                    id='keywordsDdl',multi=True,
+                    id='keywordsDdl', multi=True,
                     options=[
                         {'label': 'No filter', 'value': 'All'},
                         {'label': 'ATM', 'value': 'atm'},
@@ -566,7 +614,7 @@ class Dashboard:
                                       html.Div([html.H5("Summary"),
                                                 html.P(id='summary')
                                                 ], className='six columns', style={'textAlign': 'justify',
-                                                                                   'maxWidth':500, 'marginTop':10}
+                                                                                   'maxWidth': 500, 'marginTop': 10}
                                                )], className='row'),
                             html.H5("Sample documents",
                                     style={'marginTop': 5, 'textAlign': 'center'}),
@@ -662,7 +710,7 @@ class Dashboard:
                     ])
                 ])
             ])
-        ],)
+        ], )
 
         ##############################
         # Make interactive
@@ -675,7 +723,7 @@ class Dashboard:
             if keywords != ['All'] and keywords != None:
                 reviews = self.sel_tokens
                 for word in keywords:
-                    df = df[list(map(lambda x:word in x, reviews))]
+                    df = df[list(map(lambda x: word in x, reviews))]
             print(df.info())
             print(df.describe())
             filtered_df = df.to_json(orient='split', date_format='iso')
@@ -687,7 +735,7 @@ class Dashboard:
                             Output('posReview', 'value'), Output('posWordCloud', 'src'),
                             Output('neutReview', 'value'), Output('neutWordCloud', 'src')],
                            [Input('df-tab1', 'children'), Input('posButton', 'n_clicks')],
-                            [State('cloud_stopwords', 'value')]
+                           [State('cloud_stopwords', 'value')]
                            )
         def update_overview(filtered_df, n_clicks, input_stopwords):
             if filtered_df is not None:
@@ -708,7 +756,8 @@ class Dashboard:
             for sentiment in ['positive', 'negative', 'neutral']:
                 nouns = []
                 for message in df[df['Sentiment'] == sentiment]['Review'].str.lower():
-                    tokenized = [i for i in nltk.word_tokenize(message) if i not in nltk.corpus.stopwords.words('english')]
+                    tokenized = [i for i in nltk.word_tokenize(message) if
+                                 i not in nltk.corpus.stopwords.words('english')]
                     local_nouns = [word for (word, pos) in nltk.pos_tag(tokenized) if is_noun(pos)]
                     if len(local_nouns) > 0:
                         nouns.extend(local_nouns)
@@ -718,17 +767,17 @@ class Dashboard:
 
             if pos > 0 and neg > 0:
                 summary = "The current selection comprises {} documents, of which {} were classified as positive, " \
-                      "{} were classified as negative and {} were classified as neutral by the selected model. "\
-                      "Positive documents typically mentioned '{}', '{}' and '{}'. "\
-                      "Salient terms in negative reviews include '{}', '{}' and '{}'. ".format(
-                df.shape[0], pos, neg, neut,
-                nouns_sorted['positive'][0], nouns_sorted['positive'][1],nouns_sorted['positive'][2],
-                nouns_sorted['negative'][0], nouns_sorted['negative'][1], nouns_sorted['negative'][2],
-             )
+                          "{} were classified as negative and {} were classified as neutral by the selected model. " \
+                          "Positive documents typically mentioned '{}', '{}' and '{}'. " \
+                          "Salient terms in negative reviews include '{}', '{}' and '{}'. ".format(
+                    df.shape[0], pos, neg, neut,
+                    nouns_sorted['positive'][0], nouns_sorted['positive'][1], nouns_sorted['positive'][2],
+                    nouns_sorted['negative'][0], nouns_sorted['negative'][1], nouns_sorted['negative'][2],
+                )
             elif neg > 0:
                 summary = "The current selection comprises {} documents, of which {} were classified as positive, " \
                           "{} were classified as negative and {} were classified as neutral by the selected model. " \
-                          "Negative documents typically mentioned '{}', '{}' and '{}'. " .format(
+                          "Negative documents typically mentioned '{}', '{}' and '{}'. ".format(
                     df.shape[0], pos, neg, neut,
                     nouns_sorted['negative'][0], nouns_sorted['negative'][1], nouns_sorted['negative'][2]
                 )
@@ -744,7 +793,6 @@ class Dashboard:
                           "{} were classified as negative and {} were classified as neutral by the selected model. ".format(
                     df.shape[0], pos, neg, neut
                 )
-
 
             if neg > 0:
                 index_neg = random.randint(0, neg - 1)
@@ -850,8 +898,11 @@ class Dashboard:
                 if type == 'normalised':
                     sums = []
                     for name in pv.index:
-                        localsum = pv[('q', 'positive')][name] + pv[('q', 'negative')][name] + pv[('q', 'neutral')][
-                            name]
+                        try:
+                            localsum = pv[('q', 'positive')][name] + pv[('q', 'negative')][name] + pv[('q', 'neutral')][
+                                name]
+                        except:
+                            localsum = pv[('q', 'positive')][name] + pv[('q', 'negative')][name]
                         sums.append(localsum)
 
                     try:
@@ -870,8 +921,11 @@ class Dashboard:
                         trace3 = go.Bar(x=pv.index, y=pv[('q', 'neutral')] / sums, name='neutral',
                                         marker=dict(color=colours['sentiments'][2]), opacity=0.8)
                     except:
-                        trace3 = go.Bar(x=pv.index, y=[0] / sums, name='neutral',
-                                        marker=dict(color=colours['sentiments'][2]), opacity=0.8)
+                        try:
+                            trace3 = go.Bar(x=pv.index, y=[0] / sums, name='neutral',
+                                            marker=dict(color=colours['sentiments'][2]), opacity=0.8)
+                        except:
+                            pass
 
                 else:  # if type == raw
 
@@ -891,18 +945,26 @@ class Dashboard:
                         trace3 = go.Bar(x=pv.index, y=pv[('q', 'neutral')], name='neutral',
                                         marker=dict(color=colours['sentiments'][2]), opacity=0.8)
                     except:
-                        trace3 = go.Bar(x=pv.index, y=[0], name='neutral',
-                                        marker=dict(color=colours['sentiments'][2]), opacity=0.8)
-
-                return go.Figure({'data': [trace1, trace2, trace3],
-                                  'layout': go.Layout(
-                                      title='Sentiment counts by {}'.format(Attribute),
-                                      barmode='stack')})
+                        try:
+                            trace3 = go.Bar(x=pv.index, y=[0], name='neutral',
+                                            marker=dict(color=colours['sentiments'][2]), opacity=0.8)
+                        except:
+                            pass
+                try:
+                    return go.Figure({'data': [trace1, trace2, trace3],
+                                      'layout': go.Layout(
+                                          title='Sentiment counts by {}'.format(Attribute),
+                                          barmode='stack')})
+                except:
+                    return go.Figure({'data': [trace1, trace2],
+                                      'layout': go.Layout(
+                                          title='Sentiment counts by {}'.format(Attribute),
+                                          barmode='stack')})
 
         # Boxplot
         @dash_app.callback(
             Output('boxplot', 'figure'),
-           [Input('BoxAttribute', 'value'), Input('df-tab1', 'children')])
+            [Input('BoxAttribute', 'value'), Input('df-tab1', 'children')])
         def update_boxplot(Attribute, filtered_df):
             if filtered_df is not None:
                 df = json.loads(filtered_df)
@@ -911,7 +973,6 @@ class Dashboard:
                 df = self.unified
 
             if Attribute == 'None':
-                # display regular boxplot? noo
                 pass
             else:
                 trace1 = go.Box(y=df[df['Sentiment'] == 'positive'][Attribute], name='positive',
@@ -954,7 +1015,10 @@ class Dashboard:
             if type == 'normalised':
                 sums = []
                 for name in pv.index:
-                    localsum = pv[('q', 'positive')][name] + pv[('q', 'negative')][name] + pv[('q', 'neutral')][name]
+                    try:
+                        localsum = pv[('q', 'positive')][name] + pv[('q', 'negative')][name] + pv[('q', 'neutral')][name]
+                    except:
+                        localsum = pv[('q', 'positive')][name] + pv[('q', 'negative')][name]
                     sums.append(localsum)
             else:
                 sums = np.ones(len(pv.index))
@@ -974,11 +1038,14 @@ class Dashboard:
             try:
                 trace_neut = go.Scatter(x=pv.index, y=pv[('q', 'neutral')] / sums, name='Number neutral reviews',
                                         marker=dict(color=colours['sentiments'][2]), opacity=0.8)
+                data = [trace_pos, trace_neg, trace_neut]
             except:
-                trace_neut = go.Scatter(x=pv.index, y=[0], name='Number neutral reviews',
-                                        marker=dict(color=colours['sentiments'][2]), opacity=0.8)
-
-            data = [trace_pos, trace_neg, trace_neut]
+                try:
+                    trace_neut = go.Scatter(x=pv.index, y=[0], name='Number neutral reviews',
+                                            marker=dict(color=colours['sentiments'][2]), opacity=0.8)
+                    data = [trace_pos, trace_neg, trace_neut]
+                except:
+                    data = [trace_pos, trace_neg]
 
             layout = dict(
                 xaxis=dict(
@@ -1060,7 +1127,6 @@ class Dashboard:
                 (graph,) = pydotplus.graph_from_dot_data(dot_data.getvalue())
                 graph.write_png("assets/dtree.png")
 
-
             encoded_image = base64.b64encode(open("assets/dtree.png", 'rb').read())
 
             return 'data:image/png;base64,{}'.format(encoded_image.decode()), html.P(score)
@@ -1071,6 +1137,7 @@ class Dashboard:
             [Input('df-tab1', 'children')]
         )
         def update_map(filtered_df):
+            #try:
             if filtered_df is not None:
                 df = json.loads(filtered_df)
                 df = pd.read_json(df, orient='split')
@@ -1079,12 +1146,30 @@ class Dashboard:
 
             sentiments = []
             pos, neg, neut = self.count_instances(df['Sentiment'])
-            if neg > 0:
+            if neg > 0 and neg > pos and neg > neut:
                 sentiments.append('negative')
-            if neut > 0:
-                sentiments.append('neutral')
-            if pos > 0:
-                sentiments.append('positive')
+                if neut > 0 and neut > pos:
+                    sentiments.append('neutral')
+                    if pos > 0:
+                        sentiments.append('positive')
+                elif pos > 0:
+                    sentiments.append('positive')
+                    if neut > 0:
+                        sentiments.append('neutral')
+                elif neut > 0:
+                    sentiments.append('neutral')
+            else:
+                if pos > 0 and pos > neut:
+                    sentiments.append('positive')
+                    if neg > 0 and neg > neut:
+                        sentiments.append('negative')
+                        if neut > 0:
+                            sentiments.append('neutral')
+                    elif neg > 0 and neut > 0:
+                        sentiments.append('neutral')
+                        sentiments.append('negative')
+                    elif neut > 0:
+                        sentiments.append('neutral')
 
             df = df.assign(q=np.ones(df.shape[0]))
             pv = pd.pivot_table(
@@ -1101,6 +1186,9 @@ class Dashboard:
             for i in sentiments:
                 totals += np.asarray(pv[('q', i)].values, dtype='int64')
 
+            max = np.max(totals)
+            self.multiplier = 90 / max
+
             cases = []
             for i in sentiments:
                 cases.append(go.Scattermapbox(
@@ -1108,15 +1196,14 @@ class Dashboard:
                     lat=pv[('q', i)].index.get_level_values(0),
                     text=pv[('q', i)].values,
                     hoverinfo='name+text',
-                    hovertext= names+": "+pv[('q', i)].values.astype(str),
+                    hovertext=names + ": " + pv[('q', i)].values.astype(str),
                     name=i,
                     marker=go.scattermapbox.Marker(
                         size=pv[('q', i)].values * self.multiplier,
                         color=colours['sentiment_dict'][i],
-                        opacity = 0.8,
+                        opacity=0.8,
                     )
                 ))
-
 
             cases.append(go.Scattermapbox(
                 lon=pv[('q', i)].index.get_level_values(1),
@@ -1124,9 +1211,9 @@ class Dashboard:
                 text=names.astype(str) + " " + totals.astype(str),
                 name='Location names',
                 visible='legendonly',
-                hoverinfo = 'text',
-                mode = "markers+text",
-                textposition = 'bottom center',
+                hoverinfo='text',
+                mode="markers+text",
+                textposition='bottom center',
                 marker=go.scattermapbox.Marker(
                     size=0.1,
                     color="#000000",
@@ -1138,7 +1225,7 @@ class Dashboard:
                 height=800,
                 hovermode="closest",
                 title=go.layout.Title(
-                   text='Sentiment counts by geographical location'),
+                    text='Sentiment counts by geographical location'),
                 mapbox=go.layout.Mapbox(
                     accesstoken='pk.eyJ1IjoiamFjcXVlbGluZWthem1haWVyIiwiYSI6ImNqd2JyNm1uODBsdTM0M3M2YnF3Z3U0cDkifQ.HkemCJfHUH7nNHOmb21q0g',
                     bearing=0,
@@ -1154,7 +1241,7 @@ class Dashboard:
                     traceorder='reversed', x=0, y=1
                 )
             )
-            return {'layout':layout, 'data':cases}
+            return {'layout': layout, 'data': cases}
 
         # Topic keywords
         @dash_app.callback(
@@ -1162,11 +1249,11 @@ class Dashboard:
             [Input('keywords', 'value')]
         )
         def update_keywordslist(keywords):
-            options=[]
-            options.append({'label': 'No filter', 'value':'All'})
+            options = []
+            options.append({'label': 'No filter', 'value': 'All'})
             try:
                 options.extend([{
-                    'label':i,
+                    'label': i,
                     'value': i
                 } for i in keywords])
             except:
@@ -1177,7 +1264,7 @@ class Dashboard:
                             Output('topic_graph_Ddl', 'options')],
                            [Input('manual_keywords_button', 'n_clicks')],
                            [State('manual_keywords_input', 'value'), State('keywords', 'options')],
-                    )
+                           )
         def add_keyword_entry(n_clicks, new, old):
             if new != "":
                 if new != " ":
@@ -1198,7 +1285,7 @@ class Dashboard:
             y_neut = []
 
             if topics is not None:
-                sums=[]
+                sums = []
                 for topic in topics:
                     dff = df[list(map(lambda x: topic in x, reviews))]
                     x.append(topic)
@@ -1208,8 +1295,8 @@ class Dashboard:
 
                     if type == 'normalised':
                         localsum = sum(dff['Sentiment'] == 'positive') \
-                                    + sum(dff['Sentiment'] == 'negative') \
-                                    + sum(dff['Sentiment'] == 'neutral')
+                                   + sum(dff['Sentiment'] == 'negative') \
+                                   + sum(dff['Sentiment'] == 'neutral')
                         sums.append(localsum)
                     else:
                         sums = np.ones(len(topics))
@@ -1218,16 +1305,16 @@ class Dashboard:
                 y_neg = np.array(y_neg)
                 y_neut = np.array(y_neut)
 
-                trace1 = go.Bar(x=x, y=y_pos/sums, name='positive',
+                trace1 = go.Bar(x=x, y=y_pos / sums, name='positive',
                                 marker=dict(color=colours['sentiments'][0]), opacity=0.8)
-                trace2 = go.Bar(x=x, y=y_neg/sums, name='negative',
+                trace2 = go.Bar(x=x, y=y_neg / sums, name='negative',
                                 marker=dict(color=colours['sentiments'][1]), opacity=0.8)
-                trace3 = go.Bar(x=x, y=y_neut/sums, name='neutral',
+                trace3 = go.Bar(x=x, y=y_neut / sums, name='neutral',
                                 marker=dict(color=colours['sentiments'][2]), opacity=0.8)
 
                 if type == 'normalised':
                     return go.Figure({'data': [trace1, trace2, trace3],
-                                        'layout': go.Layout(barmode='stack')})
+                                      'layout': go.Layout(barmode='stack')})
                 else:
                     return go.Figure({'data': [trace1, trace2, trace3],
                                       'layout': go.Layout(barmode='group')})
@@ -1236,8 +1323,8 @@ class Dashboard:
                            [State('num_topics', 'value'),
                             State('num_passes', 'value')]
                            )
-        def launch_lda(n_clicks,num_topics, num_passes):
-            if num_topics is not None: #numpasses has default value
+        def launch_lda(n_clicks, num_topics, num_passes):
+            if num_topics is not None:  # numpasses has default value
                 common_texts = self.reviews.tokens
                 common_dictionary = Dictionary(common_texts)
                 # Filter out words that occur less than 2 documents, or more than 30% of the documents.

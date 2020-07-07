@@ -2,7 +2,6 @@
 
 import sys
 import random
-
 import matplotlib as mpl
 mpl.use('QT5Agg')
 
@@ -11,11 +10,13 @@ import qtmodern.windows
 import string
 import pandas as pd
 import numpy as np
+import tensorflow as tf
+import keras.backend as K
 
 from os.path import join, dirname, abspath
 from qtpy import uic, QtGui
 from qtpy.QtCore import Slot
-from qtpy.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog, QTableWidgetItem, QDialog
+from qtpy.QtWidgets import QApplication, QMainWindow, QFileDialog, QTableWidgetItem, QDialog
 from nltk.corpus import stopwords
 from sklearn.base import BaseEstimator
 from sklearn.linear_model import LogisticRegression
@@ -25,22 +26,20 @@ from sklearn.model_selection import train_test_split
 from mlxtend.preprocessing import DenseTransformer
 from joblib import dump, load
 from datetime import datetime
-
+from collections import Counter
 
 '''Model'''
 import modelling as modelling
-from preprocessing import ReviewData, ClientData, clean
+from preprocessing import ReviewData, ClientData
 from dashboard import Dashboard
 
 punctuation = [c for c in string.punctuation]
 
-
 '''View'''
 _UI = join(dirname(abspath(__file__)), 'mainwindow.ui')
-
+_UI2 = join(dirname(abspath(__file__)), 'ensemble.ui')
 
 '''Controller'''
-
 def get_feature_settings(self):
     document_models = []
     if self.presenceBox.isChecked():
@@ -72,7 +71,30 @@ def get_feature_settings(self):
     metric = self.metricDdl.currentText()
     maxfeat = self.maxFeaturexBox.value()
 
-    return document_models, ngram_ranges, test_data, val_data, n_folds, metric, maxfeat # sampling_methods,
+    return document_models, ngram_ranges, test_data, val_data, n_folds, metric, maxfeat
+
+class ModelClass:
+    def __init__(self):
+        self.model = BaseEstimator()
+        self.crossval_score = 0
+        self.param_grid = {}
+        self.best_params = {}
+
+class Experiment:
+    def __init__(self, algorithm, modelclass, document_representation, ngram_range, sampling_method, maxfeat):
+        self.modelclass = modelclass
+        self.algorithm = algorithm
+        self.document_representation = document_representation
+        self.ngram_range = ngram_range
+        self.sampling_method = sampling_method
+        self.max_features = maxfeat
+
+    def log_results(self, auc, acc, prec, rec, f1):
+        self.auc = auc
+        self.accuracy = acc
+        self.f1 = f1
+        self.precision = prec
+        self.recall = rec
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -91,7 +113,43 @@ class MainWindow(QMainWindow):
         self.comparetable.itemSelectionChanged.connect(self.on_comparetable_itemSelectionChanged)
         self.testTxt.textChanged.connect(self.on_testTxt_textChanged)
         self.valTxt.textChanged.connect(self.on_valTxt_textChanged)
-        self.stack.widget(0).setStyleSheet(".QWidget{border-image: url(assets/ecco3.png)};")
+        self.stack.widget(0).setStyleSheet(".QWidget{border-image: url(assets/eccoEnsembles.png)};")
+        self.selected_seed_index = 0
+
+        class EnsembleWindow(QDialog):
+            def __init__(self):
+                QDialog.__init__(self)
+                uic.loadUi(_UI2, self)
+                self.metaradioButton.toggled.connect(self.on_metaradioButton_StateChanged)
+                self.configuration = {}
+                self.result = 0
+
+            @Slot()
+            def on_metaradioButton_StateChanged(self):
+                if self.metaradioButton.isChecked():
+                    self.groupBox_2.setEnabled(True)
+                else:
+                    self.groupBox_2.setEnabled(False)
+
+            @Slot()
+            def accept(self):
+                if self.scoringBtn.isChecked():
+                    self.configuration['outputType'] = 'score'
+                else:
+                    self.configuration['outputType'] = 'discrete'
+
+                if self.votingradioButton.isChecked():
+                    self.configuration['combinationMethod'] = 'simple'
+                elif self.weightedradioButton.isChecked():
+                    self.configuration['combinationMethod'] = 'weighted'
+                else:
+                    self.configuration['combinationMethod'] = 'meta'
+                    self.configuration['meta-learner'] = self.metalearnerDdl.currentText()
+
+                self.result = 1
+                self.close()
+
+        self.ew = EnsembleWindow()
 
     ################################################
     # Functions for home page
@@ -174,6 +232,7 @@ class MainWindow(QMainWindow):
 
         # store text and labels
         print('storing review data . . . ')
+        self.reviews.store_text(str(self.textfieldDdl.currentText()))
         self.reviews.store_additional_fields(locations=[self.latDdl.currentText(), self.longDdl.currentText()],
                                              qual_profiles=[item.text() for item in
                                                             self.qualiReviewDetailsList.selectedItems()],
@@ -182,7 +241,6 @@ class MainWindow(QMainWindow):
                                              date=self.dateDdl.currentText(),
                                              loc=self.locDdl.currentText()
                                              )
-        self.reviews.store_text(str(self.textfieldDdl.currentText()))
         if self.labelfieldDdl.isEnabled():
             self.reviews.process_labels(str(self.labelfieldDdl.currentText()))
 
@@ -207,9 +265,10 @@ class MainWindow(QMainWindow):
             pass
 
         # create and display wordcloud
-        all_reviews = " ".join(review for review in self.reviews.text)
+        all_reviews = " ".join(review for review in self.reviews.text).split(" ")
+        most_common = {word: word_count for word, word_count in Counter(all_reviews).most_common(1000)}
         print('creating word cloud . . . ')
-        path = self.reviews.create_wordcloud(all_reviews)
+        path = self.reviews.create_wordcloud(most_common)
         image_profile = QtGui.QImage(path)  # QImage object
         self.wordcloud.setPixmap(QtGui.QPixmap.fromImage(image_profile))
 
@@ -277,6 +336,7 @@ class MainWindow(QMainWindow):
         'Apply selected preprocessing steps to the data'
 
         # tokenise
+        print('tokenising...')
         self.preprocessingProgress.setValue(0)
         self.reviews.tokenise()
         self.preprocessingProgress.setValue(30)
@@ -285,6 +345,7 @@ class MainWindow(QMainWindow):
         original_num_tokens = str(len(self.reviews.types))
 
         # stopword and punctuation removal
+        print('removing stopwords and punctuation...')
         if self.stopwordsList.isEnabled():
             stop_words = []
             for x in range(self.stopwordsList.count() - 1):
@@ -294,8 +355,8 @@ class MainWindow(QMainWindow):
             self.preprocessingProgress.setValue(50)
 
         # spell checking
+        print('correcting spelling...')
         if self.spellcheckBox.isChecked():
-            #self.reviews.get_types() #allow previous rules to be applied to tokens saved in tokens_dist
             if self.groupnumBox.isChecked():
                 self.reviews.spellcheck('aspell', num=True, exclude_list=self.numbersExcludeTxt.toPlainText())
             else:
@@ -305,10 +366,12 @@ class MainWindow(QMainWindow):
             self.reviews.spellcheck('None', num=True, exclude_list=self.numbersExcludeTxt.toPlainText())
 
         # make all lowercase
+        print('lowercasing...')
         if self.lowercaseBox.isChecked():
             self.reviews.make_lowercase()
 
         # stemming or lemmatisation
+        print('stemming...')
         if self.porterRbtn.isChecked():
             self.reviews.stem('Porter')
         elif self.lancasterRbtn.isChecked():
@@ -318,19 +381,28 @@ class MainWindow(QMainWindow):
         elif self.lemmatisationRbtn.isChecked():
             self.reviews.stem('Lemmatisation')
 
+        try:
+            print('spell corrected:')
+            print(self.reviews.replaced)
+        except:
+            pass
+
         # store as text for vectoriser later
+        print('storing as text...')
         self.reviews.store_as_text()
+        
+        # get unique tokens (types) of the corpus
+        self.reviews.get_types()
 
         # create new wordcloud
         self.preprocessingProgress.setValue(80)
-        all_reviews = ' '.join([str(item) for sublist in self.reviews.tokens for item in sublist])
-        path = self.reviews.create_wordcloud(all_reviews)
-        image_profile = QtGui.QImage(path)
+        print('creating word cloud . . . ')
+        path = self.reviews.create_wordcloud(self.reviews.tokens_dist)
+        image_profile = QtGui.QImage(path)  # QImage object
         self.wordcloud.setPixmap(QtGui.QPixmap.fromImage(image_profile))
         self.preprocessingProgress.setValue(95)
 
         # get unique tokens (types) of the corpus
-        self.reviews.get_types()
         self.numreviewsLabel.setText(str(len(self.reviews.text)))
         self.numtypesLabel.setText(original_num_tokens)
         self.numtypesafterLabel.setText(str(len(self.reviews.types)))
@@ -352,14 +424,32 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(2)
     @Slot()
     def on_selectModelBtn_clicked(self):
+        try:
+            if len(set(self.reviews.labels)) == 2:
+                binary=True
+            else:
+                binary=False
+            classes = np.unique(self.reviews.labels)
+        except:
+            binary = False
+            classes = np.unique(['positive', 'negative', 'neutral'])
+
         if self.sentiRBtn.isChecked():
-            self.finalpredictions = np.array(modelling.sentiwordnet(self.reviews.tokens)['labels'][0])
+            swn = modelling.Sentiwordnet()
+            swn.classes_ = classes
+            self.finalpredictions = swn.predict(self.reviews.cleantext, binary=binary)
         if self.patternRBtn.isChecked():
-            self.finalpredictions = np.array(modelling.pattern_sentiment(self.reviews.tokens)['labels'][0])
+            ptn = modelling.Pattern_sentiment()
+            ptn.classes_ = classes
+            self.finalpredictions = ptn.predict(self.reviews.cleantext, binary=binary)
         if self.huLiuRBtn.isChecked():
-            self.finalpredictions = np.array(modelling.hu_liu_sentiment(self.reviews.tokens)['labels'][0])
+            hl = modelling.Hu_liu_sentiment()
+            hl.classes_ = classes
+            self.finalpredictions = hl.predict(self.reviews.cleantext, binary=binary)
         if self.vaderRBtn.isChecked():
-            self.finalpredictions = np.array(modelling.vader(self.reviews.cleantext)['labels'][0])
+            vdr = modelling.Vader()
+            vdr.classes_ = classes
+            self.finalpredictions = vdr.predict(self.reviews.cleantext, binary=binary)
         if self.savedRBtn.isChecked():
             filename, _ = QFileDialog.getOpenFileName(self, "QFileDialog.getOpenFileName()", "", "All Files (*)")
             try:
@@ -367,15 +457,32 @@ class MainWindow(QMainWindow):
                 self.finalpredictions = model.predict(self.reviews.cleantext)
             except:
                 pass
+        try:
+            if np.array(self.finalpredictions)[0].shape[0]==1: #if funny 2D output of NN model
+                self.finalpredictions = [pred[0] for pred in self.finalpredictions]
+        except:
+            pass
 
         # Launch Dash App
-        final = pd.DataFrame({'Client_num': self.reviews.data[self.clients.links['reviews_side']],
-                              'Review': self.reviews.text,
-                              'Sentiment': self.finalpredictions},
-                             )
-        final = pd.concat([final, self.reviews.df], axis=1)
-        my_dash = Dashboard(final_predictions=final, reviews=self.reviews, customer_data=self.clients)
+        print("Deploying model...")
+        try:
+            final = pd.DataFrame({'Client_num': self.reviews.data[self.clients.links['reviews_side']],
+                                  'Review': self.reviews.text,
+                                  'Sentiment': self.finalpredictions},
+                                 )
+            final = pd.concat([final, self.reviews.df], axis=1)
+            my_dash = Dashboard(final_predictions=final, reviews=self.reviews, customer_data=self.clients)
+        except:
+            final = pd.DataFrame({'Client_num': None,
+                                  'Review': self.reviews.text,
+                                  'Sentiment': self.finalpredictions},
+                                 )
+            final = pd.concat([final, self.reviews.df], axis=1)
+            my_dash = Dashboard(final_predictions=final, reviews=self.reviews, customer_data=None)
+
+        print("Closing window...")
         self.close()
+        print("Launching Dash App...")
         my_dash.deploy()
 
     ################################################
@@ -516,7 +623,6 @@ class MainWindow(QMainWindow):
                     reg_type=reg_type, reg_param=reg_param, dropout_prob=dropout_prob, batchnorm=batchnorm,
                     solver=solver, max_epochs=max_epochs, learning_rate=lr, decay=lr_decay, val_split=val_data)
         vectoriser = modelling.vectorise(document_models[0], maxfeat, ngram_ranges[0])
-        #model.fit(X_train, y_train, 0.2)
 
         pipeline = Pipeline(steps=[('vectorise', vectoriser),
                                    ('to_dense', DenseTransformer()),
@@ -682,34 +788,12 @@ class MainWindow(QMainWindow):
             print('stopped')
         except:
             print('not stopped')
+        tf.reset_default_graph()
 
         # configure settings for experiments
         document_models, ngram_ranges, test_data, val_data, n_folds, metric, maxfeat = get_feature_settings(self)
 
         # get selected models and parameters for cross-validation
-        class ModelClass:
-            def __init__(self):
-                self.model = BaseEstimator()
-                self.crossval_score = 0
-                self.param_grid = {}
-                self.best_params = {}
-
-        class Experiment:
-            def __init__(self, algorithm, modelclass, document_representation, ngram_range, sampling_method, maxfeat):
-                self.modelclass = modelclass
-                self.algorithm = algorithm
-                self.document_representation = document_representation
-                self.ngram_range = ngram_range
-                self.sampling_method = sampling_method
-                self.max_features = maxfeat
-
-            def log_results(self, auc, acc, prec, rec, f1):
-                self.auc = auc
-                self.accuracy = acc
-                self.f1 = f1
-                self.precision = prec
-                self.recall = rec
-
         models = {}
         if self.nbBox.isChecked():
             models['NB'] = ModelClass()
@@ -954,12 +1038,26 @@ class MainWindow(QMainWindow):
                 'val_split': [val_data]}
 
         # execute experiments
+        if len(set(self.reviews.labels)) == 2:
+            binary=True
+        else:
+            binary=False
+
+        self.all_logs = []
+        seed = self.seed
+        K.clear_session()
         self.experiments = []
-        print(self.seed)
+
         X_train, X_test, idx_train, idx_test, y_train, y_test = train_test_split(
             self.reviews.cleantext[self.reviews.labelled_indices],
             self.reviews.labelled_data.index, self.reviews.labels, test_size=test_data,
-            random_state=self.seed, stratify=self.reviews.labels)
+            random_state=seed, stratify=self.reviews.labels)
+
+        #save vars for ensemble models
+        self.X_train = X_train
+        self.X_test = X_test
+        self.y_train = y_train
+        self.y_test = y_test
 
         total = len(document_models) * len(ngram_ranges) * len(models.keys()) + 8
         i = 0
@@ -1017,7 +1115,6 @@ class MainWindow(QMainWindow):
                     print(experiment.modelclass.best_params, experiment.modelclass.crossval_score)
                     self.experiments.append(experiment)
                     self.evaluateprogressBar.setValue(i / total * 100)
-
 
         if self.cnnBox.isChecked():
             estimator = modelling.CNN()
@@ -1082,9 +1179,21 @@ class MainWindow(QMainWindow):
 
         # test lexicon-based methods
         if self.sentiwordnetBox.isChecked():
-            experiment = Experiment(algorithm='Sentiwordnet', modelclass='n/a', document_representation='n/a',
+            experiment = Experiment(algorithm='Sentiwordnet', modelclass=ModelClass(), document_representation='n/a',
                                     ngram_range='n/a', sampling_method='n/a', maxfeat='n/a')
-            predictions = modelling.sentiwordnet(self.reviews.tokens[idx_test])
+            swn = modelling.Sentiwordnet()
+            experiment.modelclass.model = swn.fit(X_train, y_train)
+            experiment.modelclass.crossval_score = "n/a"
+            experiment.modelclass.best_params = "n/a"
+
+            try:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': [
+                                                experiment.modelclass.model.predict_proba(X_test, binary=binary)]})
+            except:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': None})
+
             i = i + 1
             path = 'assets/confusion_' + str(i) + '.png'
             micro_auc, accuracy, precision, recall, f1 = modelling.evaluate(y_test, predictions,
@@ -1096,9 +1205,21 @@ class MainWindow(QMainWindow):
         self.evaluateprogressBar.setValue(i / total * 100)
 
         if self.patternBox.isChecked():
-            experiment = Experiment(algorithm='Pattern', modelclass='n/a', document_representation='n/a',
+            experiment = Experiment(algorithm='Pattern', modelclass=ModelClass(),
+                                    document_representation='n/a',
                                     ngram_range='n/a', sampling_method='n/a', maxfeat='n/a')
-            predictions = modelling.pattern_sentiment(self.reviews.tokens[idx_test])
+            ptn = modelling.Pattern_sentiment()
+            experiment.modelclass.model = ptn.fit(X_train, y_train)
+            experiment.modelclass.crossval_score = "n/a"
+            experiment.modelclass.best_params = "n/a"
+
+            try:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': [
+                                                experiment.modelclass.model.predict_proba(X_test, binary=binary)]})
+            except:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': None})
             i = i + 1
             path = 'assets/confusion_' + str(i) + '.png'
             micro_auc, accuracy, precision, recall, f1 = modelling.evaluate(y_test, predictions,
@@ -1110,9 +1231,21 @@ class MainWindow(QMainWindow):
         self.evaluateprogressBar.setValue(i / total * 100)
 
         if self.huliuBox.isChecked():
-            experiment = Experiment(algorithm='Hu and Liu', modelclass='n/a', document_representation='n/a',
+            experiment = Experiment(algorithm='Hu and Liu', modelclass=ModelClass(),
+                                    document_representation='n/a',
                                     ngram_range='n/a', sampling_method='n/a', maxfeat='n/a')
-            predictions = modelling.hu_liu_sentiment(self.reviews.tokens[idx_test])
+            hl = modelling.Hu_liu_sentiment()
+            experiment.modelclass.model = hl.fit(X_train, y_train)
+            experiment.modelclass.crossval_score = "n/a"
+            experiment.modelclass.best_params = "n/a"
+
+            try:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': [
+                                                experiment.modelclass.model.predict_proba(X_test, binary=binary)]})
+            except:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': None})
             i = i + 1
             path = 'assets/confusion_' + str(i) + '.png'
             micro_auc, accuracy, precision, recall, f1 = modelling.evaluate(y_test, predictions,
@@ -1124,9 +1257,20 @@ class MainWindow(QMainWindow):
         self.evaluateprogressBar.setValue(i / total * 100)
 
         if self.vaderBox.isChecked():
-            experiment = Experiment(algorithm='Vader', modelclass='n/a', document_representation='n/a',
+            experiment = Experiment(algorithm='Vader', modelclass=ModelClass(), document_representation='n/a',
                                     ngram_range='n/a', sampling_method='n/a', maxfeat='n/a')
-            predictions = modelling.vader(self.reviews.cleantext[idx_test])
+            vdr = modelling.Vader()
+            experiment.modelclass.model = vdr.fit(X_train, y_train)
+            experiment.modelclass.crossval_score = "n/a"
+            experiment.modelclass.best_params = "n/a"
+            try:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': [
+                                                experiment.modelclass.model.predict_proba(X_test, binary=binary)]})
+            except:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(X_test, binary=binary)],
+                                            'numerical': None})
+            print(predictions)
             i = i + 1
             path = 'assets/confusion_' + str(i) + '.png'
             micro_auc, accuracy, precision, recall, f1 = modelling.evaluate(y_test, predictions,
@@ -1135,6 +1279,17 @@ class MainWindow(QMainWindow):
                                                                                         )
             experiment.log_results(micro_auc, accuracy, precision, recall, f1)
             self.experiments.append(experiment)
+
+        log = pd.DataFrame([d.__dict__ for d in self.experiments], index=range(len(self.experiments)))
+        log['best_params'] = [d.modelclass.best_params if d.algorithm not in ['Sentiwordnet', 'Vader', 'Hu and Liu', 'Pattern']
+         else "N/A" for d in self.experiments]
+        name = datetime.now().strftime("%Y%m%d-%H%M%S")+'_'+str(seed)
+        log.to_csv("log/" + name + ".csv")
+        self.current_i = i
+        self.current_binary = binary
+
+        self.all_logs.append(log)
+
         self.evaluateprogressBar.setValue(100)
 
         self.stack.setCurrentIndex(5)
@@ -1166,11 +1321,6 @@ class MainWindow(QMainWindow):
                 self.experiments[row].__dict__.update(self.experiments[row].modelclass.__dict__)
             except:
                 pass
-
-        log = pd.DataFrame([d.__dict__ for d in self.experiments], index=range(len(self.experiments)))
-        name = datetime.now().strftime("%Y%m%d-%H%M%S")
-        log.to_csv("log/"+name+".csv")
-
     ################################################
     # Evaluate page functions
     ################################################
@@ -1183,24 +1333,128 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def on_comparetable_itemSelectionChanged(self):
-        experiment_nr = int(self.comparetable.item(self.comparetable.currentRow(), 0).text())
-        try:
-            self.sel_experiment = self.experiments[experiment_nr]
+        if len(self.comparetable.selectionModel().selectedRows()) == 1:
+            self.ensembleButton.setEnabled(False)
+            experiment_nr = int(self.comparetable.item(self.comparetable.currentRow(), 0).text())
+            try:
+                self.sel_experiment = self.experiments[experiment_nr]
 
-            if self.sel_experiment.modelclass == 'n/a':
-                label = "Algorithm:\t{0}\n(Lexicon-based method)".format(self.sel_experiment.algorithm)
-            else:
-                label = "Algorithm:\t{0}\nHyperparameters:\t{1}\nCrossvalidated score:\t{2}".format(
-                    self.sel_experiment.algorithm,
-                    self.sel_experiment.modelclass.best_params,
-                    self.sel_experiment.modelclass.crossval_score)
-            self.describeLabel.setText(label)
-            CM_path = 'assets/confusion_'+str(experiment_nr+1)+'.png'
-            CM_image_profile = QtGui.QImage(CM_path)
-            self.confusion_matrix.setPixmap(QtGui.QPixmap.fromImage(CM_image_profile))
-            self.selectModelButton.setEnabled(True)
-        except:
-            pass
+                if self.sel_experiment.modelclass == 'n/a':
+                    label = "Algorithm:\t{0}\n(Lexicon-based method)".format(self.sel_experiment.algorithm)
+                else:
+                    label = "Algorithm:\t{0}\nHyperparameters:\t{1}\nCrossvalidated score:\t{2}".format(
+                        self.sel_experiment.algorithm,
+                        self.sel_experiment.modelclass.best_params,
+                        self.sel_experiment.modelclass.crossval_score)
+                self.describeLabel.setText(label)
+                CM_path = 'assets/confusion_'+str(experiment_nr+1)+'.png'
+                CM_image_profile = QtGui.QImage(CM_path)
+                self.confusion_matrix.setPixmap(QtGui.QPixmap.fromImage(CM_image_profile))
+                self.selectModelButton.setEnabled(True)
+            except:
+                pass
+
+        elif len(self.comparetable.selectionModel().selectedRows()) > 1:
+            self.ensembleButton.setEnabled(True)
+
+    @Slot()
+    def on_ensembleButton_clicked(self):
+        self.ew.exec()
+        if self.ew.result == 1:
+            #if not cancelled, generate ensemble
+            base_learners_index = [int(self.comparetable.item(row.row(), 0).text())
+                             for row in  self.comparetable.selectionModel().selectedRows()]
+            base_learners = []
+            accuracies = []
+            for i in base_learners_index:
+                name = str(self.experiments[i].algorithm)+str(self.experiments[i].document_representation)+str(self.experiments[i].ngram_range)
+                base_learners.append(
+                    (name,
+                     self.experiments[i].modelclass.model)
+                )
+                if self.ew.configuration['combinationMethod'] == 'weighted':
+                    if self.experiments[i].modelclass.crossval_score != 'n/a':
+                        accuracies.append(self.experiments[i].modelclass.crossval_score)
+                    else:
+                        #if crossval accuracy not available (lexicon-based models), calculate "training accuracy"
+                        predictions = pd.DataFrame(
+                            {'labels': [self.experiments[i].modelclass.model._predict(self.X_train, binary=self.current_binary)],
+                            'numerical': None})
+                        micro_auc, accuracy, precision, recall, f1 = modelling.evaluate(self.y_train, predictions,
+                                                                                        path=None,
+                                                                                        return_type='all',
+                                                                                        )
+                        accuracies.append(accuracy)
+            ensemble_model = modelling.generate_ensemble(base_learners, self.ew.configuration, accuracies)
+            experiment = Experiment(algorithm='Ensemble '+str(base_learners_index), modelclass=ModelClass(),
+                                    document_representation='n/a',
+                                    ngram_range='n/a', sampling_method='stratified', maxfeat='n/a')
+            experiment.modelclass.model = ensemble_model.fit(self.X_train, np.array(self.y_train))
+            experiment.modelclass.crossval_score = 'n/a'
+            params = self.ew.configuration.copy()
+            params['models'] = [i[0] for i in base_learners]
+            experiment.modelclass.best_params = params.copy()
+
+            # evaluate on test set
+            try:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(self.X_test)],
+                                            'numerical': [
+                                                experiment.modelclass.model.predict_proba(self.X_test)]})
+            except:
+                predictions = pd.DataFrame({'labels': [experiment.modelclass.model.predict(self.X_test)],
+                                            'numerical': None})
+            self.current_i = self.current_i + 1
+            path = 'assets/confusion_' + str(self.current_i) + '.png'
+            micro_auc, accuracy, precision, recall, f1 = modelling.evaluate(self.y_test, predictions,
+                                                                            path=path,
+                                                                            return_type='all',
+                                                                            )
+            experiment.log_results(micro_auc, accuracy, precision, recall, f1)
+            print(experiment.modelclass.best_params, experiment.modelclass.crossval_score)
+            self.experiments.append(experiment)
+
+            log = pd.DataFrame([d.__dict__ for d in self.experiments], index=range(len(self.experiments)))
+            log['best_params'] = [
+                d.modelclass.best_params if d.algorithm not in ['Sentiwordnet', 'Vader', 'Hu and Liu', 'Pattern']
+                else "N/A" for d in self.experiments]
+            name = datetime.now().strftime("%Y%m%d-%H%M%S") + '_' + str(self.seed)
+            log.to_csv("log/" + name + ".csv")
+
+            self.all_logs.append(log)
+            self.all_logs_df = pd.concat(self.all_logs, axis=0)
+            self.all_logs_df.to_csv("log/" + datetime.now().strftime("%Y%m%d-%H%M%S") + 'all_folds.csv')
+
+            self.evaluateprogressBar.setValue(100)
+
+            self.stack.setCurrentIndex(5)
+            self.comparetable.clearContents()
+            self.comparetable.setHorizontalHeaderItem(0, QTableWidgetItem("Experiment"))
+            self.comparetable.setHorizontalHeaderItem(1, QTableWidgetItem("Model"))
+            self.comparetable.setHorizontalHeaderItem(2, QTableWidgetItem("Doc. Representation"))
+            self.comparetable.setHorizontalHeaderItem(3, QTableWidgetItem("n-gram Range"))
+            self.comparetable.setHorizontalHeaderItem(4, QTableWidgetItem("Sampling method"))
+            self.comparetable.setHorizontalHeaderItem(5, QTableWidgetItem("AUC"))
+            self.comparetable.setHorizontalHeaderItem(6, QTableWidgetItem("Accuracy"))
+            self.comparetable.setHorizontalHeaderItem(7, QTableWidgetItem("F1-Score"))
+            self.comparetable.setHorizontalHeaderItem(8, QTableWidgetItem("Precision"))
+            self.comparetable.setHorizontalHeaderItem(9, QTableWidgetItem("Recall"))
+            self.comparetable.setRowCount(len(self.experiments))
+            for row in range(len(self.experiments)):
+                self.comparetable.setItem(row, 0, QTableWidgetItem(str(row)))
+                self.comparetable.setItem(row, 1, QTableWidgetItem(self.experiments[row].algorithm))
+                self.comparetable.setItem(row, 2, QTableWidgetItem(self.experiments[row].document_representation))
+                self.comparetable.setItem(row, 3, QTableWidgetItem(str(self.experiments[row].ngram_range)))
+                self.comparetable.setItem(row, 4, QTableWidgetItem(str(self.experiments[row].sampling_method)))
+                self.comparetable.setItem(row, 5, QTableWidgetItem("{:1.4f}".format(self.experiments[row].auc)))
+                self.comparetable.setItem(row, 6, QTableWidgetItem("{:1.4f}".format(self.experiments[row].accuracy)))
+                self.comparetable.setItem(row, 7, QTableWidgetItem("{:1.4f}".format(self.experiments[row].f1)))
+                self.comparetable.setItem(row, 8, QTableWidgetItem("{:1.4f}".format(self.experiments[row].precision)))
+                self.comparetable.setItem(row, 9, QTableWidgetItem("{:1.4f}".format(self.experiments[row].recall)))
+
+                try:
+                    self.experiments[row].__dict__.update(self.experiments[row].modelclass.__dict__)
+                except:
+                    pass
 
     @Slot()
     def on_selectModelButton_clicked(self):
@@ -1213,16 +1467,40 @@ class MainWindow(QMainWindow):
 
         if self.viewResultsBox.isChecked():
             # launch Dash App to display summaries
+            print("Deploying model...")
             self.finalpredictions = self.sel_experiment.modelclass.model.predict(self.reviews.cleantext)
-            # link with Dash App
-            final = pd.DataFrame({'Client_num': self.reviews.data[self.clients.links['reviews_side']],
-                                  'Review': self.reviews.text,
-                                  'Sentiment': self.finalpredictions},
-                                 )
-            final = pd.concat([final, self.reviews.df], axis=1)
-            my_dash = Dashboard(final_predictions=final, reviews=self.reviews, customer_data=self.clients)
+
+            try:
+                if np.array(self.finalpredictions)[0].shape[0] == 1:  # if funny 2D output of NN model
+                    self.finalpredictions = [pred[0] for pred in self.finalpredictions]
+            except:
+                pass
+
+            # Launch Dash App
+            print("Linking supplementary data...")
+            try:
+                final = pd.DataFrame({'Client_num': self.reviews.data[self.clients.links['reviews_side']],
+                                      'Review': self.reviews.text,
+                                      'Sentiment': self.finalpredictions},
+                                     )
+                final = pd.concat([final, self.reviews.df], axis=1)
+                my_dash = Dashboard(final_predictions=final, reviews=self.reviews, customer_data=self.clients)
+            except:
+                final = pd.DataFrame({'Client_num': None,
+                                      'Review': self.reviews.text,
+                                      'Sentiment': self.finalpredictions},
+                                     )
+                final = pd.concat([final, self.reviews.df], axis=1)
+                my_dash = Dashboard(final_predictions=final, reviews=self.reviews, customer_data=None)
+
+            print("Closing window...")
             self.close()
+            # self.quit()
+            print("Launching Dash App...")
             my_dash.deploy()
+
+    def closeEvent(self, event):
+        self.deleteLater()
 
 '''Deploy App'''
 if __name__ == '__main__':

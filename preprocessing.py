@@ -5,10 +5,8 @@ import numpy as np
 import nltk
 import sys
 
-try:
+if not sys.platform.startswith('win'):
     import aspell
-except:
-    pass
 
 from imageio import imwrite as imsave
 from wordcloud import WordCloud
@@ -47,13 +45,10 @@ def clean(self, threshold=0.5):
 
 class ReviewData:
     def __init__(self, filename):
-        try: self.data = pd.read_csv(filename, delimiter=",", encoding='latin-1')
+        try:
+            self.data = pd.read_csv(filename, encoding='latin-1')
         except:
-            try:
-                self.data = pd.read_csv(filename, delimiter=";", encoding='latin-1')
-            except:
-                self.data = pd.read_csv(filename, encoding='latin-1')
-
+            self.data = pd.read_csv(filename, delimiter=";", encoding='latin-1')
 
     def store_text(self, textColumn):
         self.text = self.data[textColumn]
@@ -62,20 +57,17 @@ class ReviewData:
         self.labelled_indices = self.data[labelsColumn].notna()
         self.labelled_data = self.data[self.labelled_indices]
         self.unlabelled_data = self.data[self.data[labelsColumn].isna()]
-
         self.labels = self.labelled_data[labelsColumn]
 
     def store_additional_fields(self, qual_profiles, quant_profiles, date = None, locations=None, loc=None):
         self.locations = locations
         self.loc = loc
         self.date = date
-
         self.quantitative_profiles = quant_profiles
         self.qualitative_profiles = qual_profiles
         self.profiles = []
         self.profiles.extend(quant_profiles)
         self.profiles.extend(qual_profiles)
-
         self.df = self.data
 
         selected_cols = []
@@ -111,24 +103,25 @@ class ReviewData:
             self.df = self.df[selected_cols]
 
     def create_wordcloud(self, text):
-        wordcloud = WordCloud(mode = "RGBA",width = 1500, height=500, max_words=1000, stopwords=[]).generate(text)
+        wordcloud = WordCloud(mode = "RGBA",width = 1500, height=500, max_words=1000, stopwords=[]
+                              ).generate_from_frequencies(text)
         path = "graphics/wordcloud.png"
         imsave(path, wordcloud)
         return path
 
     def tokenise(self):
-        self.unfiltered_tokens = []
+        self.unfiltered_tokens = np.empty(len(self.text), dtype='object')
 
         for i in range(len(self.text)):
-            self.unfiltered_tokens.append(nltk.word_tokenize(self.text[i]))
+            self.unfiltered_tokens[i] = nltk.word_tokenize(self.text[i])
 
-        self.unfiltered_tokens = np.array(self.unfiltered_tokens)
+        #self.unfiltered_tokens = np.array(self.unfiltered_tokens)
         self.tokens = self.unfiltered_tokens #in case no filtering is done
 
     def get_types(self):
         all_tokens = [token for review in self.tokens for token in review]
         self.tokens_dist = nltk.FreqDist(all_tokens)
-        self.types = set(token for review in self.tokens for token in review)
+        self.types = list(self.tokens_dist.keys())
 
     def remove_stopwords(self, stop_words):
         self.tokens = []
@@ -141,6 +134,7 @@ class ReviewData:
             self.tokens.append(placeholder)
             i = i + 1
         self.tokens = np.array(self.tokens)
+        self.removed = stop_words
 
     def stem(self, algorithm):
         if algorithm == 'Lancaster':
@@ -157,9 +151,54 @@ class ReviewData:
                 else:
                     if algorithm == 'Lemmatisation':
                         stemmer = nltk.stem.WordNetLemmatizer()
-                        review[i] = stemmer.lemmatize(review[i])  # replace token with its lemma
+                        lemma = stemmer.lemmatize(review[i])
+                        try:
+                            if lemma not in self.removed: #if not removed during stop words
+                                if lemma in self.replaced: #if spell checked
+                                    review[i] = self.replaced[lemma]
+                                else:
+                                    review[i] = lemma
+                            else:
+                                review[i] = ""
+                        except: #spell checking was not performed
+                            try:
+                                if lemma not in self.removed:
+                                    review[i] = lemma
+                                else:
+                                    review[i] = ""
+                            except:  # stopword removal wasn't performed
+                                try:
+                                    if lemma in self.replaced:  # if spell checked
+                                        review[i] = self.replaced[lemma]
+                                    else:
+                                        review[i] = lemma
+                                except: #neither were performed
+                                    review[i] = lemma
                     else:
-                        review[i] = stemmer.stem(review[i]) #replace token with stemmed version
+                        stem = stemmer.stem(review[i])
+                        try:
+                            if stem not in self.removed:  # if not removed during stop words
+                                if stem in self.replaced:  # if spell checked
+                                    review[i] = self.replaced[stem]
+                                else:
+                                    review[i] = stem
+                            else:
+                                review[i] = ""
+
+                        except:  # spell checking was not performed
+                            try:
+                                if stem not in self.removed:
+                                    review[i] = stem
+                                else:
+                                    review[i] = ""
+                            except:  # stopword removal wasn't performed
+                                try:
+                                    if stem in self.replaced:  # if spell checked
+                                        review[i] = self.replaced[stem]
+                                    else:
+                                        review[i] = stem
+                                except:  # neither were performed
+                                    review[i] = stem
 
     def spellcheck(self, spellchecker, num, exclude_list=None):
         if exclude_list != None:
@@ -167,6 +206,7 @@ class ReviewData:
 
         if spellchecker == 'aspell':
             s = aspell.Speller('lang', 'en')
+            self.replaced = {}
             for review in self.tokens:
                 for i in range(len(review)):
                     token = review[i].encode('utf8')
@@ -178,7 +218,9 @@ class ReviewData:
                     elif s.check(token) == False:
                         suggestions = s.suggest(token)
                         if any([word.lower() == token.decode('utf8').lower() for word in suggestions]):
-                            review[i] = next((word for word in suggestions if word.lower() == token.decode('utf8').lower()), None)
+                            replace = next((word for word in suggestions if word.lower() == token.decode('utf8').lower()), None)
+                            self.replaced[review[i]] = replace #cache results
+                            review[i] = replace
                         else:
                             frequencies = np.array((self.tokens_dist.freq(token.decode(
                                 'utf8')) * self.tokens_dist.N() - 1))  # exclude this instance from the frequency count
@@ -187,7 +229,9 @@ class ReviewData:
                                     suggestions[j]) * self.tokens_dist.N())
                             most_frequent_index = np.argmax(frequencies)
                             if most_frequent_index != 0:
-                                review[i] = suggestions[most_frequent_index - 1]
+                                replace = suggestions[most_frequent_index - 1]
+                                self.replaced[review[i]] = replace  # cache results
+                                review[i] = replace
         elif num == True:
             for review in self.tokens:
                 for i in range(len(review)):
@@ -201,10 +245,11 @@ class ReviewData:
                 review[i] = review[i].lower()
 
     def store_as_text(self):
-        self.cleantext = []
+        self.cleantext = np.empty(self.tokens.shape[0],dtype= 'object')
+        i=0
         for review in self.tokens:
-            self.cleantext.append(" ".join(token for token in review))
-        self.cleantext = np.array(self.cleantext)
+            self.cleantext[i] = " ".join(review)
+            i += 1
 
 
 class ClientData:
