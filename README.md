@@ -48,7 +48,7 @@ This code was built in `Python 3.7`. In order to be able to run the code, first 
 - Corresponding link from review data: _ID_
 - Qualitative attributes: _Genre_
 - Quantitative attributes: _Running time_
-5. Use the GUI to select existing models or build custom models (Ensure that the number of test and validation samples is greater than or equal to the number of folds used during cross-validation)
+5. Use the GUI to select existing models or build custom models (NB: Ensure that the number of test and validation samples is greater than or equal to the number of folds used during cross-validation, e.g. change the test and validation data proportions to 30% for 3-fold CV)
 6. Evaluate and compare developed models by means of the GUI
 7. Select a model to analyse its results by means of the _Dashboard_ interface
 8. Explore the model results and identify latent relationships between data attributes by means of the outputs of the _Dashboard_ interface
