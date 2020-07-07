@@ -1495,7 +1495,6 @@ class MainWindow(QMainWindow):
 
             print("Closing window...")
             self.close()
-            # self.quit()
             print("Launching Dash App...")
             my_dash.deploy()
 
