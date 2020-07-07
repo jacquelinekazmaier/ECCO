@@ -33,8 +33,8 @@ This code was built in `Python 3.7`. In order to be able to run the code, first 
 8. Explore the model results and identify latent relationships between data attributes by means of the outputs of the _Dashboard_ interface
 
 ## Executing the example
-1.1 Launch the _MainWindow_ interface by running `configurationApp.py`
-1.2 Upload _example_reviews_data_set.csv_ as the Reviews Data and _example_supplementary_data_set.csv_ as the Supplementary data
+1.  (a) Launch the _MainWindow_ interface by running `configurationApp.py`
+    (b) Upload _example_reviews_data_set.csv_ as the Reviews Data and _example_supplementary_data_set.csv_ as the Supplementary data
 2. Choose the following categorisation of the reviews data:
 - review text: _ReviewText_
 - sentiment label: _SentimentLabels_
