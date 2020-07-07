@@ -61,8 +61,8 @@ Choose the following categorisation of the supplementary data:
 - Click the "combine selected models in ensemble" button 
 - Select desired configurations
 - Click "OK"
-7. Select a model to analyse its results by means of the _Dashboard_ interface. Make sure the checkbox above the "save selected model" button is checked before clicking the button to proceed. 
-8. Explore the model results and identify latent relationships between data attributes by means of the outputs of the _Dashboard_ interface
+8. Select a model to analyse its results by means of the _Dashboard_ interface. Make sure the checkbox above the "save selected model" button is checked before clicking the button to proceed. 
+9. Explore the model results and identify latent relationships between data attributes by means of the outputs of the _Dashboard_ interface
 
 ## Contact
 
